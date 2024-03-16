@@ -1,0 +1,749 @@
+<?xml version="1.0" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg version="1.1" width="1200" height="198" onload="init(evt)" viewBox="0 0 1200 198" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+<!-- Flame graph stack visualization. See https://github.com/brendangregg/FlameGraph for latest version, and http://www.brendangregg.com/flamegraphs.html for examples. -->
+<!-- NOTES:  -->
+<defs>
+	<linearGradient id="background" y1="0" y2="1" x1="0" x2="0" >
+		<stop stop-color="#eeeeee" offset="5%" />
+		<stop stop-color="#eeeeb0" offset="95%" />
+	</linearGradient>
+</defs>
+<style type="text/css">
+	text { font-family:Verdana; font-size:12px; fill:rgb(0,0,0); }
+	#search, #ignorecase { opacity:0.1; cursor:pointer; }
+	#search:hover, #search.show, #ignorecase:hover, #ignorecase.show { opacity:1; }
+	#subtitle { text-anchor:middle; font-color:rgb(160,160,160); }
+	#title { text-anchor:middle; font-size:17px}
+	#unzoom { cursor:pointer; }
+	#frames > *:hover { stroke:black; stroke-width:0.5; cursor:pointer; }
+	.hide { display:none; }
+	.parent { opacity:0.5; }
+</style>
+<script type="text/ecmascript">
+<![CDATA[
+	"use strict";
+	var details, searchbtn, unzoombtn, matchedtxt, svg, searching, currentSearchTerm, ignorecase, ignorecaseBtn;
+	function init(evt) {
+		details = document.getElementById("details").firstChild;
+		searchbtn = document.getElementById("search");
+		ignorecaseBtn = document.getElementById("ignorecase");
+		unzoombtn = document.getElementById("unzoom");
+		matchedtxt = document.getElementById("matched");
+		svg = document.getElementsByTagName("svg")[0];
+		searching = 0;
+		currentSearchTerm = null;
+
+		// use GET parameters to restore a flamegraphs state.
+		var params = get_params();
+		if (params.x && params.y)
+			zoom(find_group(document.querySelector('[x="' + params.x + '"][y="' + params.y + '"]')));
+                if (params.s) search(params.s);
+	}
+
+	// event listeners
+	window.addEventListener("click", function(e) {
+		var target = find_group(e.target);
+		if (target) {
+			if (target.nodeName == "a") {
+				if (e.ctrlKey === false) return;
+				e.preventDefault();
+			}
+			if (target.classList.contains("parent")) unzoom(true);
+			zoom(target);
+			if (!document.querySelector('.parent')) {
+				// we have basically done a clearzoom so clear the url
+				var params = get_params();
+				if (params.x) delete params.x;
+				if (params.y) delete params.y;
+				history.replaceState(null, null, parse_params(params));
+				unzoombtn.classList.add("hide");
+				return;
+			}
+
+			// set parameters for zoom state
+			var el = target.querySelector("rect");
+			if (el && el.attributes && el.attributes.y && el.attributes._orig_x) {
+				var params = get_params()
+				params.x = el.attributes._orig_x.value;
+				params.y = el.attributes.y.value;
+				history.replaceState(null, null, parse_params(params));
+			}
+		}
+		else if (e.target.id == "unzoom") clearzoom();
+		else if (e.target.id == "search") search_prompt();
+		else if (e.target.id == "ignorecase") toggle_ignorecase();
+	}, false)
+
+	// mouse-over for info
+	// show
+	window.addEventListener("mouseover", function(e) {
+		var target = find_group(e.target);
+		if (target) details.nodeValue = "Function: " + g_to_text(target);
+	}, false)
+
+	// clear
+	window.addEventListener("mouseout", function(e) {
+		var target = find_group(e.target);
+		if (target) details.nodeValue = ' ';
+	}, false)
+
+	// ctrl-F for search
+	// ctrl-I to toggle case-sensitive search
+	window.addEventListener("keydown",function (e) {
+		if (e.keyCode === 114 || (e.ctrlKey && e.keyCode === 70)) {
+			e.preventDefault();
+			search_prompt();
+		}
+		else if (e.ctrlKey && e.keyCode === 73) {
+			e.preventDefault();
+			toggle_ignorecase();
+		}
+	}, false)
+
+	// functions
+	function get_params() {
+		var params = {};
+		var paramsarr = window.location.search.substr(1).split('&');
+		for (var i = 0; i < paramsarr.length; ++i) {
+			var tmp = paramsarr[i].split("=");
+			if (!tmp[0] || !tmp[1]) continue;
+			params[tmp[0]]  = decodeURIComponent(tmp[1]);
+		}
+		return params;
+	}
+	function parse_params(params) {
+		var uri = "?";
+		for (var key in params) {
+			uri += key + '=' + encodeURIComponent(params[key]) + '&';
+		}
+		if (uri.slice(-1) == "&")
+			uri = uri.substring(0, uri.length - 1);
+		if (uri == '?')
+			uri = window.location.href.split('?')[0];
+		return uri;
+	}
+	function find_child(node, selector) {
+		var children = node.querySelectorAll(selector);
+		if (children.length) return children[0];
+	}
+	function find_group(node) {
+		var parent = node.parentElement;
+		if (!parent) return;
+		if (parent.id == "frames") return node;
+		return find_group(parent);
+	}
+	function orig_save(e, attr, val) {
+		if (e.attributes["_orig_" + attr] != undefined) return;
+		if (e.attributes[attr] == undefined) return;
+		if (val == undefined) val = e.attributes[attr].value;
+		e.setAttribute("_orig_" + attr, val);
+	}
+	function orig_load(e, attr) {
+		if (e.attributes["_orig_"+attr] == undefined) return;
+		e.attributes[attr].value = e.attributes["_orig_" + attr].value;
+		e.removeAttribute("_orig_"+attr);
+	}
+	function g_to_text(e) {
+		var text = find_child(e, "title").firstChild.nodeValue;
+		return (text)
+	}
+	function g_to_func(e) {
+		var func = g_to_text(e);
+		// if there's any manipulation we want to do to the function
+		// name before it's searched, do it here before returning.
+		return (func);
+	}
+	function update_text(e) {
+		var r = find_child(e, "rect");
+		var t = find_child(e, "text");
+		var w = parseFloat(r.attributes.width.value) -3;
+		var txt = find_child(e, "title").textContent.replace(/\([^(]*\)$/,"");
+		t.attributes.x.value = parseFloat(r.attributes.x.value) + 3;
+
+		// Smaller than this size won't fit anything
+		if (w < 2 * 12 * 0.59) {
+			t.textContent = "";
+			return;
+		}
+
+		t.textContent = txt;
+		var sl = t.getSubStringLength(0, txt.length);
+		// check if only whitespace or if we can fit the entire string into width w
+		if (/^ *$/.test(txt) || sl < w)
+			return;
+
+		// this isn't perfect, but gives a good starting point
+		// and avoids calling getSubStringLength too often
+		var start = Math.floor((w/sl) * txt.length);
+		for (var x = start; x > 0; x = x-2) {
+			if (t.getSubStringLength(0, x + 2) <= w) {
+				t.textContent = txt.substring(0, x) + "..";
+				return;
+			}
+		}
+		t.textContent = "";
+	}
+
+	// zoom
+	function zoom_reset(e) {
+		if (e.attributes != undefined) {
+			orig_load(e, "x");
+			orig_load(e, "width");
+		}
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_reset(c[i]);
+		}
+	}
+	function zoom_child(e, x, ratio) {
+		if (e.attributes != undefined) {
+			if (e.attributes.x != undefined) {
+				orig_save(e, "x");
+				e.attributes.x.value = (parseFloat(e.attributes.x.value) - x - 10) * ratio + 10;
+				if (e.tagName == "text")
+					e.attributes.x.value = find_child(e.parentNode, "rect[x]").attributes.x.value + 3;
+			}
+			if (e.attributes.width != undefined) {
+				orig_save(e, "width");
+				e.attributes.width.value = parseFloat(e.attributes.width.value) * ratio;
+			}
+		}
+
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_child(c[i], x - 10, ratio);
+		}
+	}
+	function zoom_parent(e) {
+		if (e.attributes) {
+			if (e.attributes.x != undefined) {
+				orig_save(e, "x");
+				e.attributes.x.value = 10;
+			}
+			if (e.attributes.width != undefined) {
+				orig_save(e, "width");
+				e.attributes.width.value = parseInt(svg.width.baseVal.value) - (10 * 2);
+			}
+		}
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_parent(c[i]);
+		}
+	}
+	function zoom(node) {
+		var attr = find_child(node, "rect").attributes;
+		var width = parseFloat(attr.width.value);
+		var xmin = parseFloat(attr.x.value);
+		var xmax = parseFloat(xmin + width);
+		var ymin = parseFloat(attr.y.value);
+		var ratio = (svg.width.baseVal.value - 2 * 10) / width;
+
+		// XXX: Workaround for JavaScript float issues (fix me)
+		var fudge = 0.0001;
+
+		unzoombtn.classList.remove("hide");
+
+		var el = document.getElementById("frames").children;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			var a = find_child(e, "rect").attributes;
+			var ex = parseFloat(a.x.value);
+			var ew = parseFloat(a.width.value);
+			var upstack;
+			// Is it an ancestor
+			if (0 == 0) {
+				upstack = parseFloat(a.y.value) > ymin;
+			} else {
+				upstack = parseFloat(a.y.value) < ymin;
+			}
+			if (upstack) {
+				// Direct ancestor
+				if (ex <= xmin && (ex+ew+fudge) >= xmax) {
+					e.classList.add("parent");
+					zoom_parent(e);
+					update_text(e);
+				}
+				// not in current path
+				else
+					e.classList.add("hide");
+			}
+			// Children maybe
+			else {
+				// no common path
+				if (ex < xmin || ex + fudge >= xmax) {
+					e.classList.add("hide");
+				}
+				else {
+					zoom_child(e, xmin, ratio);
+					update_text(e);
+				}
+			}
+		}
+		search();
+	}
+	function unzoom(dont_update_text) {
+		unzoombtn.classList.add("hide");
+		var el = document.getElementById("frames").children;
+		for(var i = 0; i < el.length; i++) {
+			el[i].classList.remove("parent");
+			el[i].classList.remove("hide");
+			zoom_reset(el[i]);
+			if(!dont_update_text) update_text(el[i]);
+		}
+		search();
+	}
+	function clearzoom() {
+		unzoom();
+
+		// remove zoom state
+		var params = get_params();
+		if (params.x) delete params.x;
+		if (params.y) delete params.y;
+		history.replaceState(null, null, parse_params(params));
+	}
+
+	// search
+	function toggle_ignorecase() {
+		ignorecase = !ignorecase;
+		if (ignorecase) {
+			ignorecaseBtn.classList.add("show");
+		} else {
+			ignorecaseBtn.classList.remove("show");
+		}
+		reset_search();
+		search();
+	}
+	function reset_search() {
+		var el = document.querySelectorAll("#frames rect");
+		for (var i = 0; i < el.length; i++) {
+			orig_load(el[i], "fill")
+		}
+		var params = get_params();
+		delete params.s;
+		history.replaceState(null, null, parse_params(params));
+	}
+	function search_prompt() {
+		if (!searching) {
+			var term = prompt("Enter a search term (regexp " +
+			    "allowed, eg: ^ext4_)"
+			    + (ignorecase ? ", ignoring case" : "")
+			    + "\nPress Ctrl-i to toggle case sensitivity", "");
+			if (term != null) search(term);
+		} else {
+			reset_search();
+			searching = 0;
+			currentSearchTerm = null;
+			searchbtn.classList.remove("show");
+			searchbtn.firstChild.nodeValue = "Search"
+			matchedtxt.classList.add("hide");
+			matchedtxt.firstChild.nodeValue = ""
+		}
+	}
+	function search(term) {
+		if (term) currentSearchTerm = term;
+
+		var re = new RegExp(currentSearchTerm, ignorecase ? 'i' : '');
+		var el = document.getElementById("frames").children;
+		var matches = new Object();
+		var maxwidth = 0;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			var func = g_to_func(e);
+			var rect = find_child(e, "rect");
+			if (func == null || rect == null)
+				continue;
+
+			// Save max width. Only works as we have a root frame
+			var w = parseFloat(rect.attributes.width.value);
+			if (w > maxwidth)
+				maxwidth = w;
+
+			if (func.match(re)) {
+				// highlight
+				var x = parseFloat(rect.attributes.x.value);
+				orig_save(rect, "fill");
+				rect.attributes.fill.value = "rgb(230,0,230)";
+
+				// remember matches
+				if (matches[x] == undefined) {
+					matches[x] = w;
+				} else {
+					if (w > matches[x]) {
+						// overwrite with parent
+						matches[x] = w;
+					}
+				}
+				searching = 1;
+			}
+		}
+		if (!searching)
+			return;
+		var params = get_params();
+		params.s = currentSearchTerm;
+		history.replaceState(null, null, parse_params(params));
+
+		searchbtn.classList.add("show");
+		searchbtn.firstChild.nodeValue = "Reset Search";
+
+		// calculate percent matched, excluding vertical overlap
+		var count = 0;
+		var lastx = -1;
+		var lastw = 0;
+		var keys = Array();
+		for (k in matches) {
+			if (matches.hasOwnProperty(k))
+				keys.push(k);
+		}
+		// sort the matched frames by their x location
+		// ascending, then width descending
+		keys.sort(function(a, b){
+			return a - b;
+		});
+		// Step through frames saving only the biggest bottom-up frames
+		// thanks to the sort order. This relies on the tree property
+		// where children are always smaller than their parents.
+		var fudge = 0.0001;	// JavaScript floating point
+		for (var k in keys) {
+			var x = parseFloat(keys[k]);
+			var w = matches[keys[k]];
+			if (x >= lastx + lastw - fudge) {
+				count += w;
+				lastx = x;
+				lastw = w;
+			}
+		}
+		// display matched percent
+		matchedtxt.classList.remove("hide");
+		var pct = 100 * count / maxwidth;
+		if (pct != 100) pct = pct.toFixed(1)
+		matchedtxt.firstChild.nodeValue = "Matched: " + pct + "%";
+	}
+]]>
+</script>
+<rect x="0.0" y="0" width="1200.0" height="198.0" fill="url(#background)"  />
+<text id="title" x="600.00" y="24" >CPU time</text>
+<text id="details" x="10.00" y="181" > </text>
+<text id="unzoom" x="10.00" y="24" class="hide">Reset Zoom</text>
+<text id="search" x="1090.00" y="24" >Search</text>
+<text id="ignorecase" x="1174.00" y="24" >ic</text>
+<text id="matched" x="1090.00" y="181" > </text>
+<g id="frames">
+<g >
+<title>DBM:PlaySoundFile DBM-Core/DBM-Core.lua:6406:1 (34 Microseconds, 0.02%)</title><rect x="14.8" y="85" width="0.2" height="15.0" fill="rgb(224,91,21)" rx="2" ry="2" />
+<text  x="17.80" y="95.5" ></text>
+</g>
+<g >
+<title>timerPrototype:AddOption DBM-Core/DBM-Core.lua:11450:1 (47 Microseconds, 0.02%)</title><rect x="15.6" y="85" width="0.3" height="15.0" fill="rgb(213,40,9)" rx="2" ry="2" />
+<text  x="18.64" y="95.5" ></text>
+</g>
+<g >
+<title>handleEvent DBM-Core/DBM-Core.lua:1163:7 (1,093 Microseconds, 0.48%)</title><rect x="27.0" y="133" width="5.7" height="15.0" fill="rgb(249,204,48)" rx="2" ry="2" />
+<text  x="30.01" y="143.5" ></text>
+</g>
+<g >
+<title>guildSyncHandlers.GV DBM-Core/DBM-Core.lua:4560:27 (78 Microseconds, 0.03%)</title><rect x="29.9" y="101" width="0.4" height="15.0" fill="rgb(226,96,23)" rx="2" ry="2" />
+<text  x="32.87" y="111.5" ></text>
+</g>
+<g >
+<title>barPrototype:SetIcon DBM-StatusBarTimers/DBT.lua:753:0 (23 Microseconds, 0.01%)</title><rect x="18.6" y="69" width="0.2" height="15.0" fill="rgb(229,114,27)" rx="2" ry="2" />
+<text  x="21.63" y="79.5" ></text>
+</g>
+<g >
+<title>all (225,452 Microseconds, 100%)</title><rect x="10.0" y="149" width="1180.0" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="13.00" y="159.5" ></text>
+</g>
+<g >
+<title>onUpdate DBM-Core/modules/Scheduler.lua:162:6 (7,391 Microseconds, 3.28%)</title><rect x="32.7" y="133" width="38.7" height="15.0" fill="rgb(214,43,10)" rx="2" ry="2" />
+<text  x="35.73" y="143.5" >onU..</text>
+</g>
+<g >
+<title>DBM:AddMsg DBM-Core/DBM-Core.lua:7036:0 (30 Microseconds, 0.01%)</title><rect x="30.1" y="69" width="0.1" height="15.0" fill="rgb(232,127,30)" rx="2" ry="2" />
+<text  x="33.07" y="79.5" ></text>
+</g>
+<g >
+<title>SlashCmdList.DEADLYBOSSMODS DBM-Core/modules/Commands.lua:156:33 (1,617 Microseconds, 0.72%)</title><rect x="14.2" y="133" width="8.5" height="15.0" fill="rgb(244,182,43)" rx="2" ry="2" />
+<text  x="17.19" y="143.5" ></text>
+</g>
+<g >
+<title>bossModPrototype:AddBoolOption DBM-Core/DBM-Core.lua:11895:0 (43 Microseconds, 0.02%)</title><rect x="15.7" y="69" width="0.2" height="15.0" fill="rgb(252,218,52)" rx="2" ry="2" />
+<text  x="18.66" y="79.5" ></text>
+</g>
+<g >
+<title>barPrototype:Update DBM-StatusBarTimers/DBT.lua:804:0 (200,048 Microseconds, 88.73%)</title><rect x="143.0" y="117" width="1047.0" height="15.0" fill="rgb(229,110,26)" rx="2" ry="2" />
+<text  x="145.96" y="127.5" >barPrototype:Update DBM-StatusBarTimers/DBT.lua:804:0</text>
+</g>
+<g >
+<title>stringFromTimer DBM-StatusBarTimers/DBT.lua:794:6 (3,277 Microseconds, 1.45%)</title><rect x="1172.8" y="101" width="17.2" height="15.0" fill="rgb(243,176,42)" rx="2" ry="2" />
+<text  x="1175.85" y="111.5" ></text>
+</g>
+<g >
+<title>bossModPrototype:AddBoolOption DBM-Core/DBM-Core.lua:11895:0 (40 Microseconds, 0.02%)</title><rect x="15.1" y="85" width="0.2" height="15.0" fill="rgb(252,218,52)" rx="2" ry="2" />
+<text  x="18.08" y="95.5" ></text>
+</g>
+<g >
+<title>barPrototype:Enlarge DBM-StatusBarTimers/DBT.lua:1104:0 (38 Microseconds, 0.02%)</title><rect x="1172.6" y="101" width="0.2" height="15.0" fill="rgb(219,68,16)" rx="2" ry="2" />
+<text  x="1175.59" y="111.5" ></text>
+</g>
+<g >
+<title>DBM:NewMod DBM-Core/DBM-Core.lua:7304:1 (26 Microseconds, 0.01%)</title><rect x="14.5" y="101" width="0.1" height="15.0" fill="rgb(221,74,17)" rx="2" ry="2" />
+<text  x="17.49" y="111.5" ></text>
+</g>
+<g >
+<title>DBT:UpdateBars DBM-StatusBarTimers/DBT.lua:647:0 (78 Microseconds, 0.03%)</title><rect x="17.1" y="69" width="0.4" height="15.0" fill="rgb(245,188,45)" rx="2" ry="2" />
+<text  x="20.14" y="79.5" ></text>
+</g>
+<g >
+<title>DBM:UPDATE_MOUSEOVER_UNIT DBM-Core/DBM-Core.lua:4061:1 (238 Microseconds, 0.11%)</title><rect x="31.5" y="117" width="1.2" height="15.0" fill="rgb(238,152,36)" rx="2" ry="2" />
+<text  x="34.49" y="127.5" ></text>
+</g>
+<g >
+<title>DBM:DemoMode DBM-Core/DBM-Core.lua:7059:1 (1,611 Microseconds, 0.71%)</title><rect x="14.2" y="117" width="8.5" height="15.0" fill="rgb(235,141,33)" rx="2" ry="2" />
+<text  x="17.22" y="127.5" ></text>
+</g>
+<g >
+<title>DBM:CHAT_MSG_ADDON DBM-Core/DBM-Core.lua:4852:1 (148 Microseconds, 0.07%)</title><rect x="29.5" y="117" width="0.8" height="15.0" fill="rgb(231,122,29)" rx="2" ry="2" />
+<text  x="32.53" y="127.5" ></text>
+</g>
+<g >
+<title>getMin DBM-Core/modules/Scheduler.lua:60:1 (529 Microseconds, 0.23%)</title><rect x="63.3" y="117" width="2.8" height="15.0" fill="rgb(247,194,46)" rx="2" ry="2" />
+<text  x="66.32" y="127.5" ></text>
+</g>
+<g >
+<title>DBM:PlaySoundFile DBM-Core/DBM-Core.lua:6406:1 (183 Microseconds, 0.08%)</title><rect x="66.3" y="101" width="1.0" height="15.0" fill="rgb(224,91,21)" rx="2" ry="2" />
+<text  x="69.33" y="111.5" ></text>
+</g>
+<g >
+<title>getWrapper DBM-Core/modules/Scheduler.lua:151:6 (30 Microseconds, 0.01%)</title><rect x="66.1" y="117" width="0.1" height="15.0" fill="rgb(223,86,20)" rx="2" ry="2" />
+<text  x="69.09" y="127.5" ></text>
+</g>
+<g >
+<title>barPrototype:SetText DBM-StatusBarTimers/DBT.lua:745:0 (24 Microseconds, 0.01%)</title><rect x="21.2" y="85" width="0.1" height="15.0" fill="rgb(242,173,41)" rx="2" ry="2" />
+<text  x="24.21" y="95.5" ></text>
+</g>
+<g >
+<title>schedule DBM-Core/modules/Scheduler.lua:225:6 (40 Microseconds, 0.02%)</title><rect x="21.9" y="69" width="0.2" height="15.0" fill="rgb(230,117,28)" rx="2" ry="2" />
+<text  x="24.93" y="79.5" ></text>
+</g>
+<g >
+<title>sendGuildSync DBM-Core/DBM-Core.lua:859:6 (30 Microseconds, 0.01%)</title><rect x="67.6" y="101" width="0.1" height="15.0" fill="rgb(214,42,10)" rx="2" ry="2" />
+<text  x="70.56" y="111.5" ></text>
+</g>
+<g >
+<title>DBM:PlaySoundFile DBM-Core/DBM-Core.lua:6406:1 (50 Microseconds, 0.02%)</title><rect x="67.8" y="101" width="0.3" height="15.0" fill="rgb(224,91,21)" rx="2" ry="2" />
+<text  x="70.83" y="111.5" ></text>
+</g>
+<g >
+<title>HandleVersion DBM-Core/DBM-Core.lua:4437:7 (51 Microseconds, 0.02%)</title><rect x="30.0" y="85" width="0.3" height="15.0" fill="rgb(238,152,36)" rx="2" ry="2" />
+<text  x="32.99" y="95.5" ></text>
+</g>
+<g >
+<title>announcePrototype:Show DBM-Core/DBM-Core.lua:9059:1 (1,224 Microseconds, 0.54%)</title><rect x="56.2" y="117" width="6.4" height="15.0" fill="rgb(251,211,50)" rx="2" ry="2" />
+<text  x="59.18" y="127.5" ></text>
+</g>
+<g >
+<title>deleteMin DBM-Core/modules/Scheduler.lua:102:1 (140 Microseconds, 0.06%)</title><rect x="62.6" y="117" width="0.7" height="15.0" fill="rgb(223,85,20)" rx="2" ry="2" />
+<text  x="65.59" y="127.5" ></text>
+</g>
+<g >
+<title>runDelayedFunctions DBM-Core/DBM-Core.lua:1601:7 (45 Microseconds, 0.02%)</title><rect x="67.5" y="117" width="0.2" height="15.0" fill="rgb(239,157,37)" rx="2" ry="2" />
+<text  x="70.48" y="127.5" ></text>
+</g>
+<g >
+<title>specialWarningPrototype:Show DBM-Core/DBM-Core.lua:9959:1 (624 Microseconds, 0.28%)</title><rect x="68.1" y="117" width="3.3" height="15.0" fill="rgb(215,47,11)" rx="2" ry="2" />
+<text  x="71.15" y="127.5" ></text>
+</g>
+<g >
+<title>specialWarningPrototype:Play DBM-Core/DBM-Core.lua:10218:1 (82 Microseconds, 0.04%)</title><rect x="67.7" y="117" width="0.4" height="15.0" fill="rgb(205,2,0)" rx="2" ry="2" />
+<text  x="70.72" y="127.5" ></text>
+</g>
+<g >
+<title>barPrototype:SetText DBM-StatusBarTimers/DBT.lua:745:0 (22 Microseconds, 0.01%)</title><rect x="18.8" y="69" width="0.1" height="15.0" fill="rgb(242,173,41)" rx="2" ry="2" />
+<text  x="21.75" y="79.5" ></text>
+</g>
+<g >
+<title>DBT:UpdateBars DBM-StatusBarTimers/DBT.lua:647:0 (31 Microseconds, 0.01%)</title><rect x="19.1" y="53" width="0.2" height="15.0" fill="rgb(245,188,45)" rx="2" ry="2" />
+<text  x="22.12" y="63.5" ></text>
+</g>
+<g >
+<title>DBM:AddMsg DBM-Core/DBM-Core.lua:7036:0 (74 Microseconds, 0.03%)</title><rect x="68.6" y="101" width="0.4" height="15.0" fill="rgb(232,127,30)" rx="2" ry="2" />
+<text  x="71.64" y="111.5" ></text>
+</g>
+<g >
+<title>announcePrototype:Show DBM-Core/DBM-Core.lua:9059:1 (71 Microseconds, 0.03%)</title><rect x="14.6" y="101" width="0.4" height="15.0" fill="rgb(251,211,50)" rx="2" ry="2" />
+<text  x="17.64" y="111.5" ></text>
+</g>
+<g >
+<title>fontHide1 DBM-Core/DBM-Core.lua:9673:7 (222 Microseconds, 0.10%)</title><rect x="25.8" y="133" width="1.2" height="15.0" fill="rgb(240,162,38)" rx="2" ry="2" />
+<text  x="28.85" y="143.5" ></text>
+</g>
+<g >
+<title>pushCachedTable DBM-Core/modules/Scheduler.lua:39:1 (30 Microseconds, 0.01%)</title><rect x="67.3" y="117" width="0.1" height="15.0" fill="rgb(246,190,45)" rx="2" ry="2" />
+<text  x="70.29" y="127.5" ></text>
+</g>
+<g >
+<title>barPrototype:Cancel DBM-StatusBarTimers/DBT.lua:972:0 (106 Microseconds, 0.05%)</title><rect x="142.4" y="117" width="0.6" height="15.0" fill="rgb(227,104,24)" rx="2" ry="2" />
+<text  x="145.41" y="127.5" ></text>
+</g>
+<g >
+<title>flashFrame:Show DBM-Core/DBM-Flash.lua:44:0 (66 Microseconds, 0.03%)</title><rect x="71.0" y="101" width="0.4" height="15.0" fill="rgb(219,65,15)" rx="2" ry="2" />
+<text  x="74.03" y="111.5" ></text>
+</g>
+<g >
+<title>barPrototype:Update DBM-StatusBarTimers/DBT.lua:804:0 (82 Microseconds, 0.04%)</title><rect x="18.9" y="69" width="0.4" height="15.0" fill="rgb(229,110,26)" rx="2" ry="2" />
+<text  x="21.87" y="79.5" ></text>
+</g>
+<g >
+<title>(anonymous) DBM-Core/DBM-Core.lua:8842:30 (402 Microseconds, 0.18%)</title><rect x="10.0" y="133" width="2.1" height="15.0" fill="rgb(230,115,27)" rx="2" ry="2" />
+<text  x="13.01" y="143.5" ></text>
+</g>
+<g >
+<title>onUpdate DBM-StatusBarTimers/DBT.lua:189:7 (213,718 Microseconds, 94.80%)</title><rect x="71.4" y="133" width="1118.6" height="15.0" fill="rgb(231,123,29)" rx="2" ry="2" />
+<text  x="74.41" y="143.5" >onUpdate DBM-StatusBarTimers/DBT.lua:189:7</text>
+</g>
+<g >
+<title>DBM:AddMsg DBM-Core/DBM-Core.lua:7036:0 (107 Microseconds, 0.05%)</title><rect x="56.7" y="101" width="0.6" height="15.0" fill="rgb(232,127,30)" rx="2" ry="2" />
+<text  x="59.71" y="111.5" ></text>
+</g>
+<g >
+<title>barPrototype:Update DBM-StatusBarTimers/DBT.lua:804:0 (83 Microseconds, 0.04%)</title><rect x="1172.2" y="69" width="0.4" height="15.0" fill="rgb(229,110,26)" rx="2" ry="2" />
+<text  x="1175.15" y="79.5" ></text>
+</g>
+<g >
+<title>DBT:UpdateBars DBM-StatusBarTimers/DBT.lua:647:0 (31 Microseconds, 0.01%)</title><rect x="1172.4" y="53" width="0.2" height="15.0" fill="rgb(245,188,45)" rx="2" ry="2" />
+<text  x="1175.41" y="63.5" ></text>
+</g>
+<g >
+<title>DBT:CreateBar DBM-StatusBarTimers/DBT.lua:277:1 (836 Microseconds, 0.37%)</title><rect x="16.8" y="85" width="4.4" height="15.0" fill="rgb(235,141,33)" rx="2" ry="2" />
+<text  x="19.83" y="95.5" ></text>
+</g>
+<g >
+<title>timerPrototype:Stop DBM-Core/DBM-Core.lua:11141:1 (48 Microseconds, 0.02%)</title><rect x="22.4" y="101" width="0.3" height="15.0" fill="rgb(208,14,3)" rx="2" ry="2" />
+<text  x="25.40" y="111.5" ></text>
+</g>
+<g >
+<title>DBT:UpdateBars DBM-StatusBarTimers/DBT.lua:647:0 (70,843 Microseconds, 31.42%)</title><rect x="788.7" y="101" width="370.8" height="15.0" fill="rgb(245,188,45)" rx="2" ry="2" />
+<text  x="791.71" y="111.5" >DBT:UpdateBars DBM-StatusBarTimers/DBT.lua:647:0</text>
+</g>
+<g >
+<title>(anonymous) DBM-Core/DBM-Flash.lua:29:28 (377 Microseconds, 0.17%)</title><rect x="12.1" y="133" width="2.0" height="15.0" fill="rgb(223,86,20)" rx="2" ry="2" />
+<text  x="15.11" y="143.5" ></text>
+</g>
+<g >
+<title>schedule DBM-Core/modules/Scheduler.lua:225:6 (35 Microseconds, 0.02%)</title><rect x="16.0" y="101" width="0.2" height="15.0" fill="rgb(230,117,28)" rx="2" ry="2" />
+<text  x="19.02" y="111.5" ></text>
+</g>
+<g >
+<title>timerPrototype:Start DBM-Core/DBM-Core.lua:10852:1 (1,158 Microseconds, 0.51%)</title><rect x="16.3" y="101" width="6.1" height="15.0" fill="rgb(234,136,32)" rx="2" ry="2" />
+<text  x="19.34" y="111.5" ></text>
+</g>
+<g >
+<title>fontHide1 DBM-Core/DBM-Core.lua:8785:7 (610 Microseconds, 0.27%)</title><rect x="22.7" y="133" width="3.1" height="15.0" fill="rgb(220,73,17)" rx="2" ry="2" />
+<text  x="25.66" y="143.5" ></text>
+</g>
+<g >
+<title>DBM:PlaySoundFile DBM-Core/DBM-Core.lua:6406:1 (226 Microseconds, 0.10%)</title><rect x="61.2" y="101" width="1.2" height="15.0" fill="rgb(224,91,21)" rx="2" ry="2" />
+<text  x="64.20" y="111.5" ></text>
+</g>
+<g >
+<title>barPrototype:Update DBM-StatusBarTimers/DBT.lua:804:0 (110 Microseconds, 0.05%)</title><rect x="18.1" y="53" width="0.5" height="15.0" fill="rgb(229,110,26)" rx="2" ry="2" />
+<text  x="21.06" y="63.5" ></text>
+</g>
+<g >
+<title>barPrototype:ApplyStyle DBM-StatusBarTimers/DBT.lua:982:0 (207 Microseconds, 0.09%)</title><rect x="17.5" y="69" width="1.1" height="15.0" fill="rgb(217,56,13)" rx="2" ry="2" />
+<text  x="20.55" y="79.5" ></text>
+</g>
+<g >
+<title>barPrototype:ApplyStyle DBM-StatusBarTimers/DBT.lua:982:0 (239 Microseconds, 0.11%)</title><rect x="1171.3" y="85" width="1.3" height="15.0" fill="rgb(217,56,13)" rx="2" ry="2" />
+<text  x="1174.34" y="95.5" ></text>
+</g>
+<g >
+<title>DBT:UpdateBars DBM-StatusBarTimers/DBT.lua:647:0 (69 Microseconds, 0.03%)</title><rect x="1171.0" y="85" width="0.3" height="15.0" fill="rgb(245,188,45)" rx="2" ry="2" />
+<text  x="1173.97" y="95.5" ></text>
+</g>
+<g >
+<title>guildSyncHandlers.GH DBM-Core/DBM-Core.lua:4513:27 (30 Microseconds, 0.01%)</title><rect x="29.7" y="101" width="0.2" height="15.0" fill="rgb(229,112,26)" rx="2" ry="2" />
+<text  x="32.71" y="111.5" ></text>
+</g>
+<g >
+<title>DBM:COMBAT_LOG_EVENT_UNFILTERED DBM-Core/DBM-Core.lua:1534:1 (210 Microseconds, 0.09%)</title><rect x="30.3" y="117" width="1.1" height="15.0" fill="rgb(218,61,14)" rx="2" ry="2" />
+<text  x="33.31" y="127.5" ></text>
+</g>
+<g >
+<title>siftDown DBM-Core/modules/Scheduler.lua:75:7 (104 Microseconds, 0.05%)</title><rect x="62.8" y="101" width="0.5" height="15.0" fill="rgb(208,14,3)" rx="2" ry="2" />
+<text  x="65.77" y="111.5" ></text>
+</g>
+<g >
+<title>playCountdown DBM-Core/DBM-Core.lua:10755:7 (83 Microseconds, 0.04%)</title><rect x="21.7" y="85" width="0.4" height="15.0" fill="rgb(232,125,30)" rx="2" ry="2" />
+<text  x="24.70" y="95.5" ></text>
+</g>
+<g >
+<title>fireEvent DBM-Core/DBM-Core.lua:2006:1 (29 Microseconds, 0.01%)</title><rect x="62.4" y="101" width="0.1" height="15.0" fill="rgb(236,145,34)" rx="2" ry="2" />
+<text  x="65.39" y="111.5" ></text>
+</g>
+<g >
+<title>DBM:AddWarning DBM-Core/DBM-Core.lua:8899:1 (752 Microseconds, 0.33%)</title><rect x="57.3" y="101" width="3.9" height="15.0" fill="rgb(225,95,22)" rx="2" ry="2" />
+<text  x="60.27" y="111.5" ></text>
+</g>
+<g >
+<title>fireEvent DBM-Core/DBM-Core.lua:2006:1 (45 Microseconds, 0.02%)</title><rect x="21.4" y="85" width="0.2" height="15.0" fill="rgb(236,145,34)" rx="2" ry="2" />
+<text  x="24.35" y="95.5" ></text>
+</g>
+<g >
+<title>schedule DBM-Core/modules/Scheduler.lua:225:6 (32 Microseconds, 0.01%)</title><rect x="22.2" y="85" width="0.2" height="15.0" fill="rgb(230,117,28)" rx="2" ry="2" />
+<text  x="25.23" y="95.5" ></text>
+</g>
+<g >
+<title>module:Debug DBM-Core/modules/DevTools.lua:43:1 (26 Microseconds, 0.01%)</title><rect x="15.2" y="69" width="0.1" height="15.0" fill="rgb(217,58,13)" rx="2" ry="2" />
+<text  x="18.15" y="79.5" ></text>
+</g>
+<g >
+<title>createBarFrame DBM-StatusBarTimers/DBT.lua:231:7 (365 Microseconds, 0.16%)</title><rect x="19.3" y="69" width="1.9" height="15.0" fill="rgb(216,50,12)" rx="2" ry="2" />
+<text  x="22.30" y="79.5" ></text>
+</g>
+<g >
+<title>loadModByUnit DBM-Core/DBM-Core.lua:4041:7 (218 Microseconds, 0.10%)</title><rect x="31.6" y="101" width="1.1" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="34.59" y="111.5" ></text>
+</g>
+<g >
+<title>barPrototype:AnimateEnlarge DBM-StatusBarTimers/DBT.lua:1130:0 (2,500 Microseconds, 1.11%)</title><rect x="1159.5" y="101" width="13.1" height="15.0" fill="rgb(235,138,33)" rx="2" ry="2" />
+<text  x="1162.50" y="111.5" ></text>
+</g>
+<g >
+<title>playCountSound DBM-Core/DBM-Core.lua:10750:7 (200 Microseconds, 0.09%)</title><rect x="66.2" y="117" width="1.1" height="15.0" fill="rgb(241,167,40)" rx="2" ry="2" />
+<text  x="69.24" y="127.5" ></text>
+</g>
+<g >
+<title>bossModPrototype:NewTimer DBM-Core/DBM-Core.lua:11458:1 (79 Microseconds, 0.04%)</title><rect x="15.5" y="101" width="0.4" height="15.0" fill="rgb(248,199,47)" rx="2" ry="2" />
+<text  x="18.47" y="111.5" ></text>
+</g>
+<g >
+<title>bossModPrototype:NewSpecialWarning DBM-Core/DBM-Core.lua:10263:1 (33 Microseconds, 0.01%)</title><rect x="15.3" y="101" width="0.2" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="18.30" y="111.5" ></text>
+</g>
+<g >
+<title>DBM:AddSpecialWarning DBM-Core/DBM-Core.lua:9726:1 (354 Microseconds, 0.16%)</title><rect x="69.0" y="101" width="1.9" height="15.0" fill="rgb(236,143,34)" rx="2" ry="2" />
+<text  x="72.03" y="111.5" ></text>
+</g>
+<g >
+<title>sendGuildSync DBM-Core/DBM-Core.lua:859:6 (39 Microseconds, 0.02%)</title><rect x="56.0" y="101" width="0.2" height="15.0" fill="rgb(214,42,10)" rx="2" ry="2" />
+<text  x="58.97" y="111.5" ></text>
+</g>
+<g >
+<title>bossModPrototype:AddSpecialWarningOption DBM-Core/DBM-Core.lua:11935:0 (21 Microseconds, 0.01%)</title><rect x="15.4" y="85" width="0.1" height="15.0" fill="rgb(248,201,48)" rx="2" ry="2" />
+<text  x="18.35" y="95.5" ></text>
+</g>
+<g >
+<title>SendVersion DBM-Core/DBM-Core.lua:4414:7 (50 Microseconds, 0.02%)</title><rect x="55.9" y="117" width="0.3" height="15.0" fill="rgb(223,86,20)" rx="2" ry="2" />
+<text  x="58.92" y="127.5" ></text>
+</g>
+<g >
+<title>DBT:UpdateBars DBM-StatusBarTimers/DBT.lua:647:0 (32 Microseconds, 0.01%)</title><rect x="18.5" y="37" width="0.1" height="15.0" fill="rgb(245,188,45)" rx="2" ry="2" />
+<text  x="21.45" y="47.5" ></text>
+</g>
+<g >
+<title>bossModPrototype:NewAnnounce DBM-Core/DBM-Core.lua:9248:1 (55 Microseconds, 0.02%)</title><rect x="15.0" y="101" width="0.3" height="15.0" fill="rgb(230,115,27)" rx="2" ry="2" />
+<text  x="18.01" y="111.5" ></text>
+</g>
+</g>
+</svg>
