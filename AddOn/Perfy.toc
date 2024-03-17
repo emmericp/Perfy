@@ -1,0 +1,8 @@
+## Interface: 100205
+## Interface-Classic: 11501
+## Interface-Wrath: 30403
+## Title: Perfy
+## Notes: Fancy profiling
+## SavedVariables: Perfy_Export
+
+Perfy.lua
