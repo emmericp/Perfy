@@ -6,6 +6,8 @@ GetTimePreciseSec = mockGetTime
 
 require "Perfy"
 
+C_Timer = {After = function(_, f) f() end}
+
 Perfy_Start()
 mockTime = 0.25
 Perfy_Trace(0, "Enter", "Fun1")

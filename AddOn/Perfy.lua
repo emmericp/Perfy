@@ -31,7 +31,9 @@ function Perfy_Trace(timestamp, event, func)
 end
 
 function Perfy_Stop()
-	gc("restart")
+	-- Delay restarting gc because the freshly restarted gc will trigger a lot when building the lookup tables below.
+	-- For very large logs this can add several seconds of runtime and make it time out which leaves you with a broken trace.
+	C_Timer.After(0.1, function() gc("restart") end)
 	isRunning = false
 	-- This makes the saved variables file a bit smaller
 	-- (But it doesn't save significant memory because strings are interned/unique anyways, so logging the full string above is fine)
