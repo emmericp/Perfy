@@ -112,6 +112,10 @@ For example, the following command generates a [graph that excludes ClassicHealP
 
 # FAQ
 
+## How accurate is it?
+
+Within a few percent vs. the old builtin profiler, see [Accuracy.md](./Accuracy.md) for measurements and details.
+
 ## What about the default UI/Blizzard AddOns?
 
 Impossible to instrument on the code level due to code signing.
