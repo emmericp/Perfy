@@ -56,6 +56,7 @@ testInstrumentFunction("local foo = function() end", "local foo = function() Per
 testInstrumentFunction("print(function() end)", "print(function() Perfy_Trace(\"Enter\"); Perfy_Trace(\"Leave\"); end)")
 testInstrumentFunction("function foo:bar() end", "function foo:bar() Perfy_Trace(\"Enter\"); Perfy_Trace(\"Leave\"); end")
 testInstrumentFunction("function foo() return end", "function foo() Perfy_Trace(\"Enter\"); Perfy_Trace(\"Leave\"); return end")
+testInstrumentFunction("function foo() return x, y end", "function foo() Perfy_Trace(\"Enter\"); return Perfy_Trace_Leave(\"Leave\", x, y) end")
 testInstrumentFunction("function foo() do return end end", "function foo() Perfy_Trace(\"Enter\"); do Perfy_Trace(\"Leave\"); return end Perfy_Trace(\"Leave\"); end")
 testInstrumentFunction("function foo()--comment\nend", "function foo() Perfy_Trace(\"Enter\"); --comment\nPerfy_Trace(\"Leave\"); end")
 testInstrumentFunction([[
@@ -67,10 +68,10 @@ function foo()
 end
 ]], [[
 function foo() Perfy_Trace("Enter");
-	Perfy_Trace("Leave"); return function(bar) Perfy_Trace("Enter");
+	return Perfy_Trace_Leave("Leave", function(bar) Perfy_Trace("Enter");
 		if x then Perfy_Trace("Leave"); return else
-			Perfy_Trace("Leave"); return 5, 6, 7 end
-	Perfy_Trace("Leave"); end
+			return Perfy_Trace_Leave("Leave", 5, 6, 7) end
+	Perfy_Trace("Leave"); end)
 end
 ]])
 
@@ -122,11 +123,11 @@ local function testLocalLimits(code, want)
 end
 
 local locals = {}
-for i = 1, 198 do
+for i = 1, 197 do
 	locals[#locals + 1] = "local" .. i
 end
 local code = "local " .. table.concat(locals, ", ")
-testLocalLimits(code, "--[[Perfy has instrumented this file]] local Perfy_GetTime, Perfy_Trace = Perfy_GetTime, Perfy_Trace; " .. code)
+testLocalLimits(code, "--[[Perfy has instrumented this file]] local Perfy_GetTime, Perfy_Trace, Perfy_Trace_Leave = Perfy_GetTime, Perfy_Trace, Perfy_Trace_Leave; " .. code)
 
-code = code .. "\nlocal localNumber199"
+code = code .. "\nlocal localNumber198"
 testLocalLimits(code, "--[[Perfy has instrumented this file]] " .. code)

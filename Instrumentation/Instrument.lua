@@ -9,13 +9,13 @@ end
 
 -- Yeah, this is a thing and some AddOns have this in their files
 -- DBM used to set that too -- in like 2008 when some editors wouldn't default to UTF-8 without this.
----@diagnostic disable-next-line: err-esc -- The whole project is setup as Lua 5.1 (WoW Lua version), but everything that runs in LuaLS is actually 5.3
+---@diagnostic disable-next-line: err-esc -- The whole project is setup as Lua 5.1 (WoW Lua version), but everything that runs in LuaLS is actually Lua 5.3
 local utf8Bom = "\xef\xbb\xbf"
 
 local function injectLine(line, inj, offs)
 	local _, injPos = splitPos(inj.pos)
 	injPos = injPos + offs
-	local prePadding = injPos > 0 and line:sub(injPos, injPos):match("[^%s]") and line:sub(0, injPos) ~= utf8Bom and " " or ""
+	local prePadding = not inj.skipPrepadding and injPos > 0 and line:sub(injPos, injPos):match("[^%s]") and line:sub(0, injPos) ~= utf8Bom and " " or ""
 	local postPadding = injPos < #line and line:sub(injPos + 1, injPos + 1):match("[^%s]") and " " or ""
 	local injText = prePadding .. inj.text .. postPadding
 	offs = offs + #injText
@@ -25,6 +25,7 @@ end
 ---@class Injection
 ---@field pos number Position to inject at in LuaLS format
 ---@field text string What to inject
+---@field skipPrePadding boolean? Don't add a space in front of the injection
 
 ---@param state parser.state
 ---@param injections Injection[]
@@ -87,14 +88,20 @@ function mod:String(str)
 end
 
 ---@param state parser.state
----@param argFunc fun(action: string, funcName: string, node: parser.object): ...
+---@param argFunc fun(action: string, funcName: string, node: parser.object, passthrough: boolean?): ...
 ---@param injections Injection[]?
 function mod:InstrumentFunctions(state, argFunc, injections)
+	-- Note on semicolons:
+	-- Normal trace injections need them to avoid the Lua grammar ambiguity for function call vs. new statement,
+	-- e.g., foo()\n(bar).x = 5 (which is a parser error without a semicolon at the end of the line).
+	-- Injections wrapping returns must not add a semicolon because a return must be the last statement in a block
+	-- and if there was already a semicolon we would introduce an additional emtpy statement which is invalid.
 	local injections = injections or {}
 	guide.eachSourceType(state.ast, "function", function(node)
 		local funcName = getFunctionName(node, state.uri or "(unknown file)")
 		local enterArgs = argFunc and {argFunc("Enter", funcName, node)} or {}
 		local leaveArgs = argFunc and {argFunc("Leave", funcName, node)} or {}
+		local passthroughLeaveArgs = argFunc and {argFunc("Leave", funcName, node, true)} or {}
 		injections[#injections + 1] = {
 			pos = node.args.finish,
 			text = "Perfy_Trace(" .. table.concat(enterArgs, ", ") .. ");"
@@ -107,10 +114,22 @@ function mod:InstrumentFunctions(state, argFunc, injections)
 		end
 		if node.returns then
 			for k, v in pairs(node.returns) do
-				injections[#injections + 1] = {
-					pos = v.start,
-					text = "Perfy_Trace(" .. table.concat(leaveArgs, ", ") .. ");"
-				}
+				if #v > 0 then
+					injections[#injections + 1] = {
+						pos = v[1].start,
+						text = "Perfy_Trace_Leave(" .. table.concat(passthroughLeaveArgs, ", ") .. ","
+					}
+					injections[#injections + 1] = {
+						pos = v[#v].finish,
+						text = ")",
+						skipPrepadding = true
+					}
+				else
+					injections[#injections + 1] = {
+						pos = v.start,
+						text = "Perfy_Trace(" .. table.concat(leaveArgs, ", ") .. ");"
+					}
+				end
 			end
 		end
 	end)
@@ -127,13 +146,17 @@ function mod:Instrument(code, fileName, retryAfterLocalLimitExceeded)
 	---@type Injection[]
 	local injections = {}
 	if not retryAfterLocalLimitExceeded then
-		injections[#injections + 1] = {pos = 0, text = perfyTag .. " local Perfy_GetTime, Perfy_Trace = Perfy_GetTime, Perfy_Trace;"}
+		injections[#injections + 1] = {pos = 0, text = perfyTag .. " local Perfy_GetTime, Perfy_Trace, Perfy_Trace_Leave = Perfy_GetTime, Perfy_Trace, Perfy_Trace_Leave;"}
 	else
 		print("File " .. fileName .. " hit > 200 local variables at line " .. splitPos(retryAfterLocalLimitExceeded.start) .. " after injecting. Skipping local cache, Perfy's overhead for this file will be higher.")
 		injections[#injections + 1] = {pos = 0, text = perfyTag}
 	end
-	local lines = self:InstrumentFunctions(state, function(action, funcName)
-		return "Perfy_GetTime()", self:String(action), self:String(funcName)
+	local lines = self:InstrumentFunctions(state, function(action, funcName, _, passthrough)
+		if passthrough then
+			return self:String(action), self:String(funcName)
+		else
+			return "Perfy_GetTime()", self:String(action), self:String(funcName)
+		end
 	end, injections)
 	local newState = parser.compile(table.concat(lines, ""), "Lua", "Lua 5.1")
 	-- Lua only allows 200 local variables, so we can only inject our locals at the top if the file doesn't already define more than this.

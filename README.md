@@ -2,33 +2,36 @@
 
 Perfy injects code into World of Warcraft AddOns to measure performance, it can tell you exactly where CPU time is spent and which functions allocate how much memory.
 
-# Example: Tracing a boss fight in Gnomeregan
+# Example: Finding the source of micro stuttering in classic raids
 
 I traced the Mechanical Menagerie fight in Gnomeregan with all AddOns I use instrumented with Perfy.
-The trace covers the whole fight (146 seconds) and serves as a simple example for tracking down a performance bottleneck.
+The trace contains about 5 million entries that span a time of 214 seconds including the whole fight (195 seconds) and is a good example for tracking down a real performance problem.
 
 ## CPU usage
 
-[![FlameGraph of CPU usage](Screenshots/cpu.png)](https://emmericp.github.io/Perfy/perfy-cpu.svg)
-Click on the graph above to open an interactive SVG to fully explore it!
+[![FlameGraph of CPU usage](Screenshots/CPU.png)](https://emmericp.github.io/Perfy/perfy-cpu.svg)
 
-In total Perfy traced 5.6 seconds of execution time, that is an average CPU load of only 3.8% due to 3rd party addons.
-So nothing to worry about, but it is a bit odd that 42% of this load is due to ClassicHealPrediction.
+This visualization is called a [Flame Graph](https://www.brendangregg.com/flamegraphs.html), a neat way to visualize hierarchical data such as resource usage by call stacks. Click on the graph above to open an interactive SVG to fully explore it!
+
+
+In total Perfy traced 6.8 seconds of execution time, that is an average CPU load of only 3.2% due to 3rd party addons.
+So nothing to worry about, but it is a bit odd that 43% of this load is due to ClassicHealPrediction and LibHealComm.
 
 ## Memory allocations
 
-[![FlameGraph of memory allocations](Screenshots/memory.png)](https://emmericp.github.io/Perfy/perfy-memory.svg)
+[![FlameGraph of memory allocations](Screenshots/Memory.png)](https://emmericp.github.io/Perfy/perfy-memory.svg)
 Click on the graph above to open an interactive SVG to fully explore it!
 
-Perfy found a total of 303 MB of memory being allocated during the encounter, that's 120 MB per minute.
-73% of that was entirely due to ClassicHealPrediction.
+Perfy found a total of 489 MB of memory being allocated during the trace, that's 122 MB per minute.
+91% of that was due to ClassicHealPrediction.
 
+Now that is an interesting result and probably the cause of our micro stuttering.
 Allocating memory isn't a bad thing per se, the Lua garbage collector is pretty decent.
-But it can still lead to micro stuttering so AddOns typically avoid allocating memory, especially during boss fights in big raids.
-So there's clearly something going wrong in ClassicHealPrediction because why would it need so much memory in a simple 10 man raid?
-I wonder how much worse it is in a 40 man raid, I would love to see a trace!
+But garbage collection pauses can still lead to micro stuttering, so AddOns typically avoid allocating memory, especially during boss fights in big raids.
+There's clearly something going wrong in ClassicHealPrediction because why would it need so much memory in a simple 10 man raid?
+There are [reports of it being worse in larger raids](https://github.com/dev7355608/ClassicHealPrediction/issues/2), I wonder how much it needs in a 40 man raid, I would love to see a trace!
 
-The function that Perfy identified gets called OnUpdate (i.e., 60 times per second for me) and for every unit frame.
+The function `updateHealPrediction` that Perfy identified gets called OnUpdate (i.e., 60 times per second for me) and for every unit frame.
 It then re-draws the heal predictions (even if nothing changed) and calls `CreateColor()` up to 8 times to do so.
 `CreateColor()` allocates a new `ColorMixin` every time for the same color and that's how we got the excessive allocations.
 
@@ -37,8 +40,6 @@ The reason why it doesn't show up separately is that we cannot instrument functi
 
 I confirmed that this is indeed the culprit by pulling out the color creation into a separate function that wraps `CreateColor()`.
 Running the whole process again shows that virtually all of the memory allocation is now in that new wrapper function.
-Maybe Perfy can automate this in the future, tracing only at entry and exit points is arbitrary.
-We could add an option that adds extra trace points into hot functions.
 
 # Usage
 
@@ -58,9 +59,9 @@ It will automatically find all Lua files referenced there.
 ./bin/lua-language-server <path to perfy>/Instrumentation/Main.lua <path to wow-addons>/*/*.toc
 ```
 
-You don't have to add it to every AddOn, it's perfectly fine to only instrument the AddOn you are interested in.
-But note that shared libraries are only instanced by one AddOn depending on them, so they may be missing from the traces if the used instance is not instrumented.
-If uninstrumented AddOns use shared libraries from instrumented AddOns there may be large unexplained self-times of functions if the instrumented shared library is the initial entry point of a call trace (e.g., timers).
+You don't have to add it to every AddOn, it's perfectly fine to only instrument the AddOns you are interested in.
+But note that shared libraries are only instanced by one AddOn even if multiple AddOns are trying to load them, so they may be missing from the traces if the used instance is not instrumented.
+If uninstrumented AddOns use shared libraries from instrumented AddOns there may be large unexplained self-times of functions in the instrumented shared library if it is the initial entry point of a call trace (e.g., timers).
 
 ## Measure
 
@@ -78,6 +79,8 @@ Reload your UI or log out afterwards to make WoW export the data.
 **Keep measurement times short, this is not something that can run continously.**
 Short means a few minutes depending on the load and number of instrumented AddOns.
 The main bottleneck is memory, it needs a few hundred MB per minute with my UI during a Gnomeregan boss fight.
+Perfy regularly reports how many events it already gathered, as a rule of thumb you shouldn't exceed a few million trace events and a few gigabytes of memory.
+Tracing a whole boss fight should be fine, but a whole raid night is definitely not feasible (nor would it be useful).
 
 ## Analyze
 
@@ -96,24 +99,18 @@ This outputs two files: `stacks-cpu.txt` with CPU usage in microseconds and `sta
 The files from the previous step are in the folded/collapsed stack format expected by [flamegraph.pl](https://github.com/brendangregg/FlameGraph).
 
 ```
-./flamegraph.pl stacks-cpu.txt --countname "Microseconds" --title "CPU time" > perfy-cpu.sv
-./flamegraph.pl stacks-memory.txt --countname "Bytes" --title "Memory allocations" > perfy-memory.svg
+./flamegraph.pl stacks-cpu.txt --countname "Microseconds" --title "CPU time"  --width 1600 > perfy-cpu.sv
+./flamegraph.pl stacks-memory.txt --countname "Bytes" --title "Memory allocations" --width 1600 > perfy-memory.svg
 ```
 
 The input text files can also be pre-filtered (just use `grep`, the format is pretty self-explanatory) to remove things you are not interested in.
+For example, the following command generates a [graph that excludes ClassicHealPrediction](https://emmericp.github.io/Perfy/perfy-memory-filtered.svg) with the data from the example above.
+
+```
+ grep -v ClassicHealPrediction stacks-memory.txt | ./flamegraph.pl --countname "Bytes" --title "Memory allocations" --width 1600 > perfy-memory.svg
+```
 
 # FAQ
-
-## Your handling of tail calls is wrong!
-
-Yes, I know.
-Perfy records leaving a function before return values are evaluated, so if a return value is a function call then that will look like it came from the caller in the trace.
-I'll fix that later.
-
-## Why do you sometimes get memory stacks with negative allocation?
-
-Good question, it looks like `collectgarbage("count")` is non-monotonic even when garbage collection is disabled which breaks the assumptions of the trace analyzer.
-We should probably handle this a bit more gracefully in the trace.
 
 ## What about the default UI/Blizzard AddOns?
 
@@ -131,12 +128,17 @@ On my system (Windows 11) this has a granularity of 100 ns which is good enough 
 
 ## How does it measure memory allocations?
 
-Starting perfy disables garbage collection and the injected code calls `collectgarbage("count")` to measure changes in allocations.
+Starting Perfy disables garbage collection and the injected code calls `collectgarbage("count")` to measure changes in allocations.
+
+For some unknown reason the reported memory usage is still sometimes non-monotonic (and no, it's not due to `table.wipe`).
+This happens rarely: 0.02% of trace events above report a negative memory delta.
+Perfy counts these as 0.
+These negative events seem to be following the same distribution as normal events, so there should be no systematic error being introduced.
 
 ## No fair, you changed the outcome by measuring it!
 
 Measuring performance will always affect performance, this is especially true for profilers based on instrumentation.
-Perfy adds around 2µs of overhead (on my Ryzen 7800X3D) and ~400 byte of memory allocations to every function call (two trace entries).
+Perfy adds around 1 µs of overhead (on my Ryzen 7800X3D) and 432 byte of memory allocations to every function call (two trace entries).
 This overhead is accounted for separately and subtracted during analysis, so the overall measurement results are probably still pretty accurate.
 
 ## What about dynamically loaded code?
@@ -146,6 +148,11 @@ Will be accounted to the function that calls it.
 ## What about coroutines?
 
 Poorly supported, some time/memory will be missing in the result for functions using coroutines and you will see some warnings when running the analyzer script.
+
+## What about pcall?
+
+`pcall` can confuse the stack reconstruction a bit, but it shouldn't be too bad or relevant.
+In some cases we catch it and add a "missing stack information" entry to the stack, in others Perfy reports a warning when running the analyzer.
 
 ## Why do I get an error about the constant table size in Perfy saved variables when reloading?
 
