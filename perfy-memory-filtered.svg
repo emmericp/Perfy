@@ -1,0 +1,3525 @@
+<?xml version="1.0" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg version="1.1" width="1600" height="566" onload="init(evt)" viewBox="0 0 1600 566" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+<!-- Flame graph stack visualization. See https://github.com/brendangregg/FlameGraph for latest version, and http://www.brendangregg.com/flamegraphs.html for examples. -->
+<!-- NOTES:  -->
+<defs>
+	<linearGradient id="background" y1="0" y2="1" x1="0" x2="0" >
+		<stop stop-color="#eeeeee" offset="5%" />
+		<stop stop-color="#eeeeb0" offset="95%" />
+	</linearGradient>
+</defs>
+<style type="text/css">
+	text { font-family:Verdana; font-size:12px; fill:rgb(0,0,0); }
+	#search, #ignorecase { opacity:0.1; cursor:pointer; }
+	#search:hover, #search.show, #ignorecase:hover, #ignorecase.show { opacity:1; }
+	#subtitle { text-anchor:middle; font-color:rgb(160,160,160); }
+	#title { text-anchor:middle; font-size:17px}
+	#unzoom { cursor:pointer; }
+	#frames > *:hover { stroke:black; stroke-width:0.5; cursor:pointer; }
+	.hide { display:none; }
+	.parent { opacity:0.5; }
+</style>
+<script type="text/ecmascript">
+<![CDATA[
+	"use strict";
+	var details, searchbtn, unzoombtn, matchedtxt, svg, searching, currentSearchTerm, ignorecase, ignorecaseBtn;
+	function init(evt) {
+		details = document.getElementById("details").firstChild;
+		searchbtn = document.getElementById("search");
+		ignorecaseBtn = document.getElementById("ignorecase");
+		unzoombtn = document.getElementById("unzoom");
+		matchedtxt = document.getElementById("matched");
+		svg = document.getElementsByTagName("svg")[0];
+		searching = 0;
+		currentSearchTerm = null;
+
+		// use GET parameters to restore a flamegraphs state.
+		var params = get_params();
+		if (params.x && params.y)
+			zoom(find_group(document.querySelector('[x="' + params.x + '"][y="' + params.y + '"]')));
+                if (params.s) search(params.s);
+	}
+
+	// event listeners
+	window.addEventListener("click", function(e) {
+		var target = find_group(e.target);
+		if (target) {
+			if (target.nodeName == "a") {
+				if (e.ctrlKey === false) return;
+				e.preventDefault();
+			}
+			if (target.classList.contains("parent")) unzoom(true);
+			zoom(target);
+			if (!document.querySelector('.parent')) {
+				// we have basically done a clearzoom so clear the url
+				var params = get_params();
+				if (params.x) delete params.x;
+				if (params.y) delete params.y;
+				history.replaceState(null, null, parse_params(params));
+				unzoombtn.classList.add("hide");
+				return;
+			}
+
+			// set parameters for zoom state
+			var el = target.querySelector("rect");
+			if (el && el.attributes && el.attributes.y && el.attributes._orig_x) {
+				var params = get_params()
+				params.x = el.attributes._orig_x.value;
+				params.y = el.attributes.y.value;
+				history.replaceState(null, null, parse_params(params));
+			}
+		}
+		else if (e.target.id == "unzoom") clearzoom();
+		else if (e.target.id == "search") search_prompt();
+		else if (e.target.id == "ignorecase") toggle_ignorecase();
+	}, false)
+
+	// mouse-over for info
+	// show
+	window.addEventListener("mouseover", function(e) {
+		var target = find_group(e.target);
+		if (target) details.nodeValue = "Function: " + g_to_text(target);
+	}, false)
+
+	// clear
+	window.addEventListener("mouseout", function(e) {
+		var target = find_group(e.target);
+		if (target) details.nodeValue = ' ';
+	}, false)
+
+	// ctrl-F for search
+	// ctrl-I to toggle case-sensitive search
+	window.addEventListener("keydown",function (e) {
+		if (e.keyCode === 114 || (e.ctrlKey && e.keyCode === 70)) {
+			e.preventDefault();
+			search_prompt();
+		}
+		else if (e.ctrlKey && e.keyCode === 73) {
+			e.preventDefault();
+			toggle_ignorecase();
+		}
+	}, false)
+
+	// functions
+	function get_params() {
+		var params = {};
+		var paramsarr = window.location.search.substr(1).split('&');
+		for (var i = 0; i < paramsarr.length; ++i) {
+			var tmp = paramsarr[i].split("=");
+			if (!tmp[0] || !tmp[1]) continue;
+			params[tmp[0]]  = decodeURIComponent(tmp[1]);
+		}
+		return params;
+	}
+	function parse_params(params) {
+		var uri = "?";
+		for (var key in params) {
+			uri += key + '=' + encodeURIComponent(params[key]) + '&';
+		}
+		if (uri.slice(-1) == "&")
+			uri = uri.substring(0, uri.length - 1);
+		if (uri == '?')
+			uri = window.location.href.split('?')[0];
+		return uri;
+	}
+	function find_child(node, selector) {
+		var children = node.querySelectorAll(selector);
+		if (children.length) return children[0];
+	}
+	function find_group(node) {
+		var parent = node.parentElement;
+		if (!parent) return;
+		if (parent.id == "frames") return node;
+		return find_group(parent);
+	}
+	function orig_save(e, attr, val) {
+		if (e.attributes["_orig_" + attr] != undefined) return;
+		if (e.attributes[attr] == undefined) return;
+		if (val == undefined) val = e.attributes[attr].value;
+		e.setAttribute("_orig_" + attr, val);
+	}
+	function orig_load(e, attr) {
+		if (e.attributes["_orig_"+attr] == undefined) return;
+		e.attributes[attr].value = e.attributes["_orig_" + attr].value;
+		e.removeAttribute("_orig_"+attr);
+	}
+	function g_to_text(e) {
+		var text = find_child(e, "title").firstChild.nodeValue;
+		return (text)
+	}
+	function g_to_func(e) {
+		var func = g_to_text(e);
+		// if there's any manipulation we want to do to the function
+		// name before it's searched, do it here before returning.
+		return (func);
+	}
+	function update_text(e) {
+		var r = find_child(e, "rect");
+		var t = find_child(e, "text");
+		var w = parseFloat(r.attributes.width.value) -3;
+		var txt = find_child(e, "title").textContent.replace(/\([^(]*\)$/,"");
+		t.attributes.x.value = parseFloat(r.attributes.x.value) + 3;
+
+		// Smaller than this size won't fit anything
+		if (w < 2 * 12 * 0.59) {
+			t.textContent = "";
+			return;
+		}
+
+		t.textContent = txt;
+		var sl = t.getSubStringLength(0, txt.length);
+		// check if only whitespace or if we can fit the entire string into width w
+		if (/^ *$/.test(txt) || sl < w)
+			return;
+
+		// this isn't perfect, but gives a good starting point
+		// and avoids calling getSubStringLength too often
+		var start = Math.floor((w/sl) * txt.length);
+		for (var x = start; x > 0; x = x-2) {
+			if (t.getSubStringLength(0, x + 2) <= w) {
+				t.textContent = txt.substring(0, x) + "..";
+				return;
+			}
+		}
+		t.textContent = "";
+	}
+
+	// zoom
+	function zoom_reset(e) {
+		if (e.attributes != undefined) {
+			orig_load(e, "x");
+			orig_load(e, "width");
+		}
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_reset(c[i]);
+		}
+	}
+	function zoom_child(e, x, ratio) {
+		if (e.attributes != undefined) {
+			if (e.attributes.x != undefined) {
+				orig_save(e, "x");
+				e.attributes.x.value = (parseFloat(e.attributes.x.value) - x - 10) * ratio + 10;
+				if (e.tagName == "text")
+					e.attributes.x.value = find_child(e.parentNode, "rect[x]").attributes.x.value + 3;
+			}
+			if (e.attributes.width != undefined) {
+				orig_save(e, "width");
+				e.attributes.width.value = parseFloat(e.attributes.width.value) * ratio;
+			}
+		}
+
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_child(c[i], x - 10, ratio);
+		}
+	}
+	function zoom_parent(e) {
+		if (e.attributes) {
+			if (e.attributes.x != undefined) {
+				orig_save(e, "x");
+				e.attributes.x.value = 10;
+			}
+			if (e.attributes.width != undefined) {
+				orig_save(e, "width");
+				e.attributes.width.value = parseInt(svg.width.baseVal.value) - (10 * 2);
+			}
+		}
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_parent(c[i]);
+		}
+	}
+	function zoom(node) {
+		var attr = find_child(node, "rect").attributes;
+		var width = parseFloat(attr.width.value);
+		var xmin = parseFloat(attr.x.value);
+		var xmax = parseFloat(xmin + width);
+		var ymin = parseFloat(attr.y.value);
+		var ratio = (svg.width.baseVal.value - 2 * 10) / width;
+
+		// XXX: Workaround for JavaScript float issues (fix me)
+		var fudge = 0.0001;
+
+		unzoombtn.classList.remove("hide");
+
+		var el = document.getElementById("frames").children;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			var a = find_child(e, "rect").attributes;
+			var ex = parseFloat(a.x.value);
+			var ew = parseFloat(a.width.value);
+			var upstack;
+			// Is it an ancestor
+			if (0 == 0) {
+				upstack = parseFloat(a.y.value) > ymin;
+			} else {
+				upstack = parseFloat(a.y.value) < ymin;
+			}
+			if (upstack) {
+				// Direct ancestor
+				if (ex <= xmin && (ex+ew+fudge) >= xmax) {
+					e.classList.add("parent");
+					zoom_parent(e);
+					update_text(e);
+				}
+				// not in current path
+				else
+					e.classList.add("hide");
+			}
+			// Children maybe
+			else {
+				// no common path
+				if (ex < xmin || ex + fudge >= xmax) {
+					e.classList.add("hide");
+				}
+				else {
+					zoom_child(e, xmin, ratio);
+					update_text(e);
+				}
+			}
+		}
+		search();
+	}
+	function unzoom(dont_update_text) {
+		unzoombtn.classList.add("hide");
+		var el = document.getElementById("frames").children;
+		for(var i = 0; i < el.length; i++) {
+			el[i].classList.remove("parent");
+			el[i].classList.remove("hide");
+			zoom_reset(el[i]);
+			if(!dont_update_text) update_text(el[i]);
+		}
+		search();
+	}
+	function clearzoom() {
+		unzoom();
+
+		// remove zoom state
+		var params = get_params();
+		if (params.x) delete params.x;
+		if (params.y) delete params.y;
+		history.replaceState(null, null, parse_params(params));
+	}
+
+	// search
+	function toggle_ignorecase() {
+		ignorecase = !ignorecase;
+		if (ignorecase) {
+			ignorecaseBtn.classList.add("show");
+		} else {
+			ignorecaseBtn.classList.remove("show");
+		}
+		reset_search();
+		search();
+	}
+	function reset_search() {
+		var el = document.querySelectorAll("#frames rect");
+		for (var i = 0; i < el.length; i++) {
+			orig_load(el[i], "fill")
+		}
+		var params = get_params();
+		delete params.s;
+		history.replaceState(null, null, parse_params(params));
+	}
+	function search_prompt() {
+		if (!searching) {
+			var term = prompt("Enter a search term (regexp " +
+			    "allowed, eg: ^ext4_)"
+			    + (ignorecase ? ", ignoring case" : "")
+			    + "\nPress Ctrl-i to toggle case sensitivity", "");
+			if (term != null) search(term);
+		} else {
+			reset_search();
+			searching = 0;
+			currentSearchTerm = null;
+			searchbtn.classList.remove("show");
+			searchbtn.firstChild.nodeValue = "Search"
+			matchedtxt.classList.add("hide");
+			matchedtxt.firstChild.nodeValue = ""
+		}
+	}
+	function search(term) {
+		if (term) currentSearchTerm = term;
+
+		var re = new RegExp(currentSearchTerm, ignorecase ? 'i' : '');
+		var el = document.getElementById("frames").children;
+		var matches = new Object();
+		var maxwidth = 0;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			var func = g_to_func(e);
+			var rect = find_child(e, "rect");
+			if (func == null || rect == null)
+				continue;
+
+			// Save max width. Only works as we have a root frame
+			var w = parseFloat(rect.attributes.width.value);
+			if (w > maxwidth)
+				maxwidth = w;
+
+			if (func.match(re)) {
+				// highlight
+				var x = parseFloat(rect.attributes.x.value);
+				orig_save(rect, "fill");
+				rect.attributes.fill.value = "rgb(230,0,230)";
+
+				// remember matches
+				if (matches[x] == undefined) {
+					matches[x] = w;
+				} else {
+					if (w > matches[x]) {
+						// overwrite with parent
+						matches[x] = w;
+					}
+				}
+				searching = 1;
+			}
+		}
+		if (!searching)
+			return;
+		var params = get_params();
+		params.s = currentSearchTerm;
+		history.replaceState(null, null, parse_params(params));
+
+		searchbtn.classList.add("show");
+		searchbtn.firstChild.nodeValue = "Reset Search";
+
+		// calculate percent matched, excluding vertical overlap
+		var count = 0;
+		var lastx = -1;
+		var lastw = 0;
+		var keys = Array();
+		for (k in matches) {
+			if (matches.hasOwnProperty(k))
+				keys.push(k);
+		}
+		// sort the matched frames by their x location
+		// ascending, then width descending
+		keys.sort(function(a, b){
+			return a - b;
+		});
+		// Step through frames saving only the biggest bottom-up frames
+		// thanks to the sort order. This relies on the tree property
+		// where children are always smaller than their parents.
+		var fudge = 0.0001;	// JavaScript floating point
+		for (var k in keys) {
+			var x = parseFloat(keys[k]);
+			var w = matches[keys[k]];
+			if (x >= lastx + lastw - fudge) {
+				count += w;
+				lastx = x;
+				lastw = w;
+			}
+		}
+		// display matched percent
+		matchedtxt.classList.remove("hide");
+		var pct = 100 * count / maxwidth;
+		if (pct != 100) pct = pct.toFixed(1)
+		matchedtxt.firstChild.nodeValue = "Matched: " + pct + "%";
+	}
+]]>
+</script>
+<rect x="0.0" y="0" width="1600.0" height="566.0" fill="url(#background)"  />
+<text id="title" x="800.00" y="24" >Memory allocations</text>
+<text id="details" x="10.00" y="549" > </text>
+<text id="unzoom" x="10.00" y="24" class="hide">Reset Zoom</text>
+<text id="search" x="1490.00" y="24" >Search</text>
+<text id="ignorecase" x="1574.00" y="24" >ic</text>
+<text id="matched" x="1490.00" y="549" > </text>
+<g id="frames">
+<g >
+<title>atributo_heal:NovaTabela Details/classes/classe_heal.lua:70:0 (31,968 Bytes, 0.08%)</title><rect x="145.4" y="437" width="1.2" height="15.0" fill="rgb(230,115,27)" rx="2" ry="2" />
+<text  x="148.38" y="447.5" ></text>
+</g>
+<g >
+<title>(anonymous) Auctionator/Libs/LibSerialize/LibSerialize.lua:852:43 (13,872 Bytes, 0.03%)</title><rect x="660.6" y="133" width="0.5" height="15.0" fill="rgb(244,182,43)" rx="2" ry="2" />
+<text  x="663.57" y="143.5" ></text>
+</g>
+<g >
+<title>new CharacterNotes/Libs/AceTimer-3.0/AceTimer-3.0.lua:32:6 (5,824 Bytes, 0.01%)</title><rect x="176.4" y="421" width="0.3" height="15.0" fill="rgb(247,194,46)" rx="2" ry="2" />
+<text  x="179.43" y="431.5" ></text>
+</g>
+<g >
+<title>Plater.RunScriptTriggersForAuraIcons Plater/Plater_Auras.lua:1744:1 (288,960 Bytes, 0.71%)</title><rect x="719.9" y="469" width="11.1" height="15.0" fill="rgb(230,118,28)" rx="2" ry="2" />
+<text  x="722.88" y="479.5" ></text>
+</g>
+<g >
+<title>GetBlockDynamicHuffmanHeader DBM-Core/Libs/LibDeflate/LibDeflate.lua:1491:6 (35,232 Bytes, 0.09%)</title><rect x="177.8" y="373" width="1.3" height="15.0" fill="rgb(216,51,12)" rx="2" ry="2" />
+<text  x="180.78" y="383.5" ></text>
+</g>
+<g >
+<title>GL:forEachItemInBags Gargul/Classes/Helpers.lua:1156:0 (3,959,741 Bytes, 9.66%)</title><rect x="219.3" y="421" width="152.7" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="222.33" y="431.5" >GL:forEachItemInBag..</text>
+</g>
+<g >
+<title>read_actor_flag Details/classes/container_combatentes.lua:211:25 (9,856 Bytes, 0.02%)</title><rect x="141.4" y="437" width="0.3" height="15.0" fill="rgb(251,215,51)" rx="2" ry="2" />
+<text  x="144.36" y="447.5" ></text>
+</g>
+<g >
+<title>uid AdiBags/libs/AceHook-3.0/AceHook-3.0.lua:87:8 (1,447,696 Bytes, 3.53%)</title><rect x="1012.0" y="469" width="55.8" height="15.0" fill="rgb(243,178,42)" rx="2" ry="2" />
+<text  x="1014.97" y="479.5" >uid A..</text>
+</g>
+<g >
+<title>atributo_heal:AtualizaBarra Details/classes/classe_heal.lua:568:0 (76,728 Bytes, 0.19%)</title><rect x="188.9" y="421" width="3.0" height="15.0" fill="rgb(236,145,34)" rx="2" ry="2" />
+<text  x="191.91" y="431.5" ></text>
+</g>
+<g >
+<title>Private.AnchorFrame WeakAuras/WeakAuras.lua:5782:0 (285,228 Bytes, 0.70%)</title><rect x="1579.0" y="453" width="11.0" height="15.0" fill="rgb(219,68,16)" rx="2" ry="2" />
+<text  x="1582.00" y="463.5" ></text>
+</g>
+<g >
+<title>Details:SendPlayerClassicInformation Details/core/gears.lua:2299:0 (318,279 Bytes, 0.78%)</title><rect x="77.0" y="469" width="12.2" height="15.0" fill="rgb(215,48,11)" rx="2" ry="2" />
+<text  x="79.98" y="479.5" ></text>
+</g>
+<g >
+<title>tips:HighlightEmergencySpell RXPGuides/Tips.lua:321:0 (3,642 Bytes, 0.01%)</title><rect x="1000.1" y="453" width="0.2" height="15.0" fill="rgb(253,223,53)" rx="2" ry="2" />
+<text  x="1003.12" y="463.5" ></text>
+</g>
+<g >
+<title>ButtonMetaFunctions.? Details/Libs/DetailsFramework/lib/button.lua:933:37 (8,682 Bytes, 0.02%)</title><rect x="90.0" y="453" width="0.3" height="15.0" fill="rgb(231,122,29)" rx="2" ry="2" />
+<text  x="92.97" y="463.5" ></text>
+</g>
+<g >
+<title>container_combatentes:PegarCombatente Details/classes/container_combatentes.lua:483:1 (20,640 Bytes, 0.05%)</title><rect x="151.9" y="405" width="0.8" height="15.0" fill="rgb(223,86,20)" rx="2" ry="2" />
+<text  x="154.89" y="415.5" ></text>
+</g>
+<g >
+<title>LibSerialize:_ReadPair Auctionator/Libs/LibSerialize/LibSerialize.lua:760:0 (20,240 Bytes, 0.05%)</title><rect x="660.3" y="229" width="0.8" height="15.0" fill="rgb(252,218,52)" rx="2" ry="2" />
+<text  x="663.32" y="239.5" ></text>
+</g>
+<g >
+<title>_detalhes:ColetarLixo Details/core/meta.lua:928:1 (6,464 Bytes, 0.02%)</title><rect x="193.4" y="437" width="0.3" height="15.0" fill="rgb(237,149,35)" rx="2" ry="2" />
+<text  x="196.43" y="447.5" ></text>
+</g>
+<g >
+<title>NWB:convertKeys NovaWorldBuffs/NWBData.lua:2237:0 (23,168 Bytes, 0.06%)</title><rect x="670.9" y="389" width="0.9" height="15.0" fill="rgb(243,179,42)" rx="2" ry="2" />
+<text  x="673.90" y="399.5" ></text>
+</g>
+<g >
+<title>WriteBits DBM-Core/Libs/LibDeflate/LibDeflate.lua:749:8 (7,068 Bytes, 0.02%)</title><rect x="91.1" y="389" width="0.3" height="15.0" fill="rgb(227,101,24)" rx="2" ry="2" />
+<text  x="94.14" y="399.5" ></text>
+</g>
+<g >
+<title>registry:Fire AdiBags/libs/CallbackHandler-1.0/CallbackHandler-1.0.lua:49:1 (285,289 Bytes, 0.70%)</title><rect x="654.5" y="453" width="11.0" height="15.0" fill="rgb(215,48,11)" rx="2" ry="2" />
+<text  x="657.48" y="463.5" ></text>
+</g>
+<g >
+<title>Plater.CheckLifePercentText Plater/Plater.lua:7378:1 (68,947 Bytes, 0.17%)</title><rect x="691.7" y="437" width="2.7" height="15.0" fill="rgb(227,104,24)" rx="2" ry="2" />
+<text  x="694.72" y="447.5" ></text>
+</g>
+<g >
+<title>Plater.UpdateBossModAuras Plater/Plater_BossModsSupport.lua:128:0 (30,684 Bytes, 0.07%)</title><rect x="943.8" y="469" width="1.2" height="15.0" fill="rgb(224,87,20)" rx="2" ry="2" />
+<text  x="946.84" y="479.5" ></text>
+</g>
+<g >
+<title>container_combatentes:NovoContainer Details/classes/container_combatentes.lua:141:1 (6,640 Bytes, 0.02%)</title><rect x="158.6" y="421" width="0.2" height="15.0" fill="rgb(243,174,41)" rx="2" ry="2" />
+<text  x="161.55" y="431.5" ></text>
+</g>
+<g >
+<title>Plater.HookLoadCallback Plater/Plater.lua:4143:2 (451,203 Bytes, 1.10%)</title><rect x="674.3" y="469" width="17.4" height="15.0" fill="rgb(234,136,32)" rx="2" ry="2" />
+<text  x="677.32" y="479.5" ></text>
+</g>
+<g >
+<title>OnEvent AtlasLootClassic/Libs/AceComm-3.0/AceComm-3.0.lua:242:6 (514,810 Bytes, 1.26%)</title><rect x="654.5" y="485" width="19.8" height="15.0" fill="rgb(235,142,34)" rx="2" ry="2" />
+<text  x="657.48" y="495.5" ></text>
+</g>
+<g >
+<title>(anonymous) TacoTip/main.lua:46:43 (206,160 Bytes, 0.50%)</title><rect x="1003.8" y="357" width="7.9" height="15.0" fill="rgb(247,193,46)" rx="2" ry="2" />
+<text  x="1006.76" y="367.5" ></text>
+</g>
+<g >
+<title>LibSerialize:_ReadTable Auctionator/Libs/LibSerialize/LibSerialize.lua:695:0 (22,256 Bytes, 0.05%)</title><rect x="660.2" y="245" width="0.9" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="663.25" y="255.5" ></text>
+</g>
+<g >
+<title>NotesDB:GetAlternateName CharacterNotes/NotesDB.lua:101:0 (5,760 Bytes, 0.01%)</title><rect x="1066.7" y="421" width="0.2" height="15.0" fill="rgb(206,6,1)" rx="2" ry="2" />
+<text  x="1069.66" y="431.5" ></text>
+</g>
+<g >
+<title>parser_functions:PLAYER_REGEN_DISABLED Details/core/parser.lua:4325:1 (5,440 Bytes, 0.01%)</title><rect x="176.2" y="469" width="0.2" height="15.0" fill="rgb(247,195,46)" rx="2" ry="2" />
+<text  x="179.16" y="479.5" ></text>
+</g>
+<g >
+<title>(anonymous) Details/gumps/janela_principal.lua:7240:22 (9,474 Bytes, 0.02%)</title><rect x="89.9" y="485" width="0.4" height="15.0" fill="rgb(208,14,3)" rx="2" ry="2" />
+<text  x="92.94" y="495.5" ></text>
+</g>
+<g >
+<title>Plater.WipeAndRecompileAllScripts Plater/Plater.lua:11569:1 (451,203 Bytes, 1.10%)</title><rect x="674.3" y="453" width="17.4" height="15.0" fill="rgb(223,86,20)" rx="2" ry="2" />
+<text  x="677.32" y="463.5" ></text>
+</g>
+<g >
+<title>GetBlockLZ77Result DBM-Core/Libs/LibDeflate/LibDeflate.lua:1241:6 (149,608 Bytes, 0.37%)</title><rect x="92.8" y="405" width="5.7" height="15.0" fill="rgb(239,160,38)" rx="2" ry="2" />
+<text  x="95.77" y="415.5" ></text>
+</g>
+<g >
+<title>LibSerialize:_ReadPair Auctionator/Libs/LibSerialize/LibSerialize.lua:760:0 (14,720 Bytes, 0.04%)</title><rect x="672.2" y="309" width="0.6" height="15.0" fill="rgb(252,218,52)" rx="2" ry="2" />
+<text  x="675.19" y="319.5" ></text>
+</g>
+<g >
+<title>GL:inventoryItemTradeTimeRemaining Gargul/Classes/Helpers.lua:1589:0 (1,631,757 Bytes, 3.98%)</title><rect x="309.1" y="373" width="62.9" height="15.0" fill="rgb(236,146,34)" rx="2" ry="2" />
+<text  x="312.07" y="383.5" >GL:inv..</text>
+</g>
+<g >
+<title>GetHuffmanForDecode DBM-Core/Libs/LibDeflate/LibDeflate.lua:2303:6 (7,048 Bytes, 0.02%)</title><rect x="667.4" y="341" width="0.3" height="15.0" fill="rgb(240,161,38)" rx="2" ry="2" />
+<text  x="670.45" y="351.5" ></text>
+</g>
+<g >
+<title>container_habilidades:NovoContainer Details/classes/container_habilidades.lua:35:1 (4,048 Bytes, 0.01%)</title><rect x="138.3" y="437" width="0.2" height="15.0" fill="rgb(245,187,44)" rx="2" ry="2" />
+<text  x="141.34" y="447.5" ></text>
+</g>
+<g >
+<title>LibSerialize:_ReadTable Auctionator/Libs/LibSerialize/LibSerialize.lua:695:0 (29,146 Bytes, 0.07%)</title><rect x="657.8" y="245" width="1.1" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="660.78" y="255.5" ></text>
+</g>
+<g >
+<title>ExtendedCharacterStats (551,555 Bytes, 1.35%)</title><rect x="195.6" y="501" width="21.3" height="15.0" fill="rgb(209,20,4)" rx="2" ry="2" />
+<text  x="198.59" y="511.5" >E..</text>
+</g>
+<g >
+<title>parser:add_debuff_uptime Details/core/parser.lua:2492:1 (50,816 Bytes, 0.12%)</title><rect x="138.2" y="453" width="2.0" height="15.0" fill="rgb(248,200,47)" rx="2" ry="2" />
+<text  x="141.21" y="463.5" ></text>
+</g>
+<g >
+<title>LibSerialize:_ReadObject Auctionator/Libs/LibSerialize/LibSerialize.lua:655:0 (14,720 Bytes, 0.04%)</title><rect x="670.3" y="293" width="0.5" height="15.0" fill="rgb(221,77,18)" rx="2" ry="2" />
+<text  x="673.28" y="303.5" ></text>
+</g>
+<g >
+<title>LibSerialize:Deserialize Auctionator/Libs/LibSerialize/LibSerialize.lua:1337:0 (14,882 Bytes, 0.04%)</title><rect x="669.0" y="405" width="0.6" height="15.0" fill="rgb(217,58,13)" rx="2" ry="2" />
+<text  x="671.99" y="415.5" ></text>
+</g>
+<g >
+<title>tips:ACTIONBAR_SLOT_CHANGED RXPGuides/Tips.lua:395:0 (352,689 Bytes, 0.86%)</title><rect x="985.1" y="421" width="13.6" height="15.0" fill="rgb(241,168,40)" rx="2" ry="2" />
+<text  x="988.06" y="431.5" ></text>
+</g>
+<g >
+<title>DroppedLootLedger:_shouldTrackItems Gargul/Classes/DroppedLootLedger.lua:84:0 (2,941 Bytes, 0.01%)</title><rect x="372.0" y="373" width="0.1" height="15.0" fill="rgb(247,196,47)" rx="2" ry="2" />
+<text  x="375.02" y="383.5" ></text>
+</g>
+<g >
+<title>registerUnitEvent DBM-Core/DBM-Core.lua:1166:2 (2,939 Bytes, 0.01%)</title><rect x="46.9" y="421" width="0.1" height="15.0" fill="rgb(216,53,12)" rx="2" ry="2" />
+<text  x="49.85" y="431.5" ></text>
+</g>
+<g >
+<title>container_habilidades:PegaHabilidade Details/classes/container_habilidades.lua:62:1 (15,992 Bytes, 0.04%)</title><rect x="170.9" y="437" width="0.7" height="15.0" fill="rgb(248,201,48)" rx="2" ry="2" />
+<text  x="173.95" y="447.5" ></text>
+</g>
+<g >
+<title>f:INSPECT_READY TacoTip/Libs/LibClassicInspector/LibClassicInspector.lua:2945:0 (212,560 Bytes, 0.52%)</title><rect x="1003.8" y="469" width="8.2" height="15.0" fill="rgb(205,1,0)" rx="2" ry="2" />
+<text  x="1006.76" y="479.5" ></text>
+</g>
+<g >
+<title>NWB:config NovaWorldBuffs/Options.lua:3750:0 (2,880 Bytes, 0.01%)</title><rect x="671.0" y="373" width="0.1" height="15.0" fill="rgb(248,202,48)" rx="2" ry="2" />
+<text  x="673.95" y="383.5" ></text>
+</g>
+<g >
+<title>(anonymous) Gargul/Classes/User.lua:88:55 (9,002 Bytes, 0.02%)</title><rect x="372.0" y="469" width="0.3" height="15.0" fill="rgb(215,48,11)" rx="2" ry="2" />
+<text  x="374.99" y="479.5" ></text>
+</g>
+<g >
+<title>_GetInspectGearSlots ExtendedCharacterStats/Modules/GearInfos.lua:92:23 (18,887 Bytes, 0.05%)</title><rect x="216.1" y="453" width="0.8" height="15.0" fill="rgb(209,21,5)" rx="2" ry="2" />
+<text  x="219.13" y="463.5" ></text>
+</g>
+<g >
+<title>LibSerialize:_ReadTable Auctionator/Libs/LibSerialize/LibSerialize.lua:695:0 (16,912 Bytes, 0.04%)</title><rect x="672.1" y="325" width="0.7" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="675.11" y="335.5" ></text>
+</g>
+<g >
+<title>UnitAuraEventHandler Plater/Plater_Auras.lua:540:29 (517,430 Bytes, 1.26%)</title><rect x="957.0" y="485" width="20.0" height="15.0" fill="rgb(211,31,7)" rx="2" ry="2" />
+<text  x="960.04" y="495.5" ></text>
+</g>
+<g >
+<title>LibDeflate:CompressDeflate DBM-Core/Libs/LibDeflate/LibDeflate.lua:2039:0 (61,127 Bytes, 0.15%)</title><rect x="662.6" y="357" width="2.3" height="15.0" fill="rgb(250,208,49)" rx="2" ry="2" />
+<text  x="665.55" y="367.5" ></text>
+</g>
+<g >
+<title>Plater.OnHealthChange Plater/Plater.lua:5331:1 (68,947 Bytes, 0.17%)</title><rect x="691.7" y="469" width="2.7" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="694.72" y="479.5" ></text>
+</g>
+<g >
+<title>eventFunctions.PLAYER_REGEN_ENABLED Plater/Plater.lua:2102:25 (5,152 Bytes, 0.01%)</title><rect x="718.4" y="469" width="0.2" height="15.0" fill="rgb(238,154,37)" rx="2" ry="2" />
+<text  x="721.36" y="479.5" ></text>
+</g>
+<g >
+<title>DBM:EndCombat DBM-Core/DBM-Core.lua:5775:1 (4,290 Bytes, 0.01%)</title><rect x="72.4" y="453" width="0.2" height="15.0" fill="rgb(226,100,23)" rx="2" ry="2" />
+<text  x="75.39" y="463.5" ></text>
+</g>
+<g >
+<title>GetHuffmanCodeFromBitlen DBM-Core/Libs/LibDeflate/LibDeflate.lua:913:6 (4,888 Bytes, 0.01%)</title><rect x="663.7" y="277" width="0.1" height="15.0" fill="rgb(247,195,46)" rx="2" ry="2" />
+<text  x="666.66" y="287.5" ></text>
+</g>
+<g >
+<title>NWB:config NovaWorldBuffs/Options.lua:3750:0 (3,456 Bytes, 0.01%)</title><rect x="671.5" y="357" width="0.1" height="15.0" fill="rgb(248,202,48)" rx="2" ry="2" />
+<text  x="674.48" y="367.5" ></text>
+</g>
+<g >
+<title>LibSerialize:_ReadTable Auctionator/Libs/LibSerialize/LibSerialize.lua:695:0 (26,920 Bytes, 0.07%)</title><rect x="657.9" y="181" width="1.0" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="660.86" y="191.5" ></text>
+</g>
+<g >
+<title>UpdateUnitAuraCacheData Plater/Plater_Auras.lua:585:26 (49,392 Bytes, 0.12%)</title><rect x="695.2" y="437" width="1.9" height="15.0" fill="rgb(216,52,12)" rx="2" ry="2" />
+<text  x="698.17" y="447.5" ></text>
+</g>
+<g >
+<title>(anonymous) Gargul/Classes/GDKP/Session.lua:98:97 (4,211 Bytes, 0.01%)</title><rect x="372.2" y="405" width="0.1" height="15.0" fill="rgb(218,60,14)" rx="2" ry="2" />
+<text  x="375.16" y="415.5" ></text>
+</g>
+<g >
+<title>(anonymous) Questie/Modules/Tooltips/Tooltip.lua:353:47 (25,947 Bytes, 0.06%)</title><rect x="977.0" y="485" width="1.0" height="15.0" fill="rgb(229,113,27)" rx="2" ry="2" />
+<text  x="980.01" y="495.5" ></text>
+</g>
+<g >
+<title>read_actor_flag Details/classes/container_combatentes.lua:211:25 (4,532 Bytes, 0.01%)</title><rect x="167.7" y="437" width="0.2" height="15.0" fill="rgb(251,215,51)" rx="2" ry="2" />
+<text  x="170.68" y="447.5" ></text>
+</g>
+<g >
+<title>parserFunctions.SPELL_INTERRUPT Plater/Plater.lua:9141:20 (3,954 Bytes, 0.01%)</title><rect x="956.7" y="469" width="0.1" height="15.0" fill="rgb(250,207,49)" rx="2" ry="2" />
+<text  x="959.68" y="479.5" ></text>
+</g>
+<g >
+<title>atributo_energy:NovaTabela Details/classes/classe_energy.lua:68:0 (17,760 Bytes, 0.04%)</title><rect x="140.6" y="437" width="0.7" height="15.0" fill="rgb(234,134,32)" rx="2" ry="2" />
+<text  x="143.58" y="447.5" ></text>
+</g>
+<g >
+<title>habilidade_dano:NovaTabela Details/classes/classe_damage_habilidade.lua:26:1 (11,616 Bytes, 0.03%)</title><rect x="171.8" y="421" width="0.5" height="15.0" fill="rgb(211,30,7)" rx="2" ry="2" />
+<text  x="174.84" y="431.5" ></text>
+</g>
+<g >
+<title>Plater.EventHandler Plater/Plater.lua:3887:1 (280,502 Bytes, 0.68%)</title><rect x="945.2" y="453" width="10.8" height="15.0" fill="rgb(211,30,7)" rx="2" ry="2" />
+<text  x="948.19" y="463.5" ></text>
+</g>
+<g >
+<title>NWB:receivedData NovaWorldBuffs/NWBData.lua:1416:0 (54,037 Bytes, 0.13%)</title><rect x="660.2" y="389" width="2.1" height="15.0" fill="rgb(224,88,21)" rx="2" ry="2" />
+<text  x="663.20" y="399.5" ></text>
+</g>
+<g >
+<title>NotesDB:ParseName CharacterNotes/NotesDB.lua:70:0 (58,720 Bytes, 0.14%)</title><rect x="27.8" y="405" width="2.3" height="15.0" fill="rgb(214,42,10)" rx="2" ry="2" />
+<text  x="30.83" y="415.5" ></text>
+</g>
+<g >
+<title>Plater.UpdateBossModAuras Plater/Plater_BossModsSupport.lua:128:0 (11,348 Bytes, 0.03%)</title><rect x="715.8" y="421" width="0.5" height="15.0" fill="rgb(224,87,20)" rx="2" ry="2" />
+<text  x="718.83" y="431.5" ></text>
+</g>
+<g >
+<title>LibDeflate:CompressDeflate DBM-Core/Libs/LibDeflate/LibDeflate.lua:2039:0 (291,928 Bytes, 0.71%)</title><rect x="91.1" y="453" width="11.2" height="15.0" fill="rgb(250,208,49)" rx="2" ry="2" />
+<text  x="94.09" y="463.5" ></text>
+</g>
+<g >
+<title>timerPrototype:Start DBM-Core/DBM-Core.lua:10912:1 (5,088 Bytes, 0.01%)</title><rect x="43.0" y="421" width="0.2" height="15.0" fill="rgb(253,225,53)" rx="2" ry="2" />
+<text  x="46.02" y="431.5" ></text>
+</g>
+<g >
+<title>container_combatentes:PegarCombatente Details/classes/container_combatentes.lua:483:1 (2,664 Bytes, 0.01%)</title><rect x="175.3" y="373" width="0.1" height="15.0" fill="rgb(223,86,20)" rx="2" ry="2" />
+<text  x="178.31" y="383.5" ></text>
+</g>
+<g >
+<title>DF:GetRoleByClassicTalentTree Plater/libs/DF/fw.lua:205:0 (8,544 Bytes, 0.02%)</title><rect x="157.7" y="405" width="0.4" height="15.0" fill="rgb(228,106,25)" rx="2" ry="2" />
+<text  x="160.74" y="415.5" ></text>
+</g>
+<g >
+<title>(anonymous) Plater/libs/DF/icon.lua:132:17 (3,780 Bytes, 0.01%)</title><rect x="716.1" y="373" width="0.1" height="15.0" fill="rgb(220,73,17)" rx="2" ry="2" />
+<text  x="719.08" y="383.5" ></text>
+</g>
+<g >
+<title>timerPrototype:Start DBM-Core/DBM-Core.lua:10912:1 (11,237 Bytes, 0.03%)</title><rect x="45.5" y="421" width="0.4" height="15.0" fill="rgb(253,225,53)" rx="2" ry="2" />
+<text  x="48.47" y="431.5" ></text>
+</g>
+<g >
+<title>registry:Fire AdiBags/libs/CallbackHandler-1.0/CallbackHandler-1.0.lua:49:1 (859,925 Bytes, 2.10%)</title><rect x="102.5" y="453" width="33.2" height="15.0" fill="rgb(215,48,11)" rx="2" ry="2" />
+<text  x="105.54" y="463.5" >re..</text>
+</g>
+<g >
+<title>eventFunctions.NAME_PLATE_UNIT_REMOVED Plater/Plater.lua:3728:28 (3,232 Bytes, 0.01%)</title><rect x="955.9" y="437" width="0.1" height="15.0" fill="rgb(218,61,14)" rx="2" ry="2" />
+<text  x="958.88" y="447.5" ></text>
+</g>
+<g >
+<title>container_habilidades:PegaHabilidade Details/classes/container_habilidades.lua:62:1 (40,456 Bytes, 0.10%)</title><rect x="167.9" y="453" width="1.5" height="15.0" fill="rgb(248,201,48)" rx="2" ry="2" />
+<text  x="170.86" y="463.5" ></text>
+</g>
+<g >
+<title>QuestieLink:GetQuestHyperLink Questie/Modules/QuestLinks/Link.lua:72:0 (178,009 Bytes, 0.43%)</title><rect x="978.2" y="469" width="6.8" height="15.0" fill="rgb(244,179,42)" rx="2" ry="2" />
+<text  x="981.15" y="479.5" ></text>
+</g>
+<g >
+<title>AceComm-3.0 (11,437 Bytes, 0.03%)</title><rect x="10.0" y="501" width="0.4" height="15.0" fill="rgb(216,51,12)" rx="2" ry="2" />
+<text  x="13.00" y="511.5" ></text>
+</g>
+<g >
+<title>LibSerialize:_ClearReferences Auctionator/Libs/LibSerialize/LibSerialize.lua:643:0 (2,880 Bytes, 0.01%)</title><rect x="670.1" y="357" width="0.1" height="15.0" fill="rgb(241,168,40)" rx="2" ry="2" />
+<text  x="673.08" y="367.5" ></text>
+</g>
+<g >
+<title>container_habilidades:PegaHabilidade Details/classes/container_habilidades.lua:62:1 (25,888 Bytes, 0.06%)</title><rect x="138.5" y="437" width="1.0" height="15.0" fill="rgb(248,201,48)" rx="2" ry="2" />
+<text  x="141.50" y="447.5" ></text>
+</g>
+<g >
+<title>timerPrototype:Start DBM-Core/DBM-Core.lua:10912:1 (5,386 Bytes, 0.01%)</title><rect x="47.7" y="421" width="0.2" height="15.0" fill="rgb(253,225,53)" rx="2" ry="2" />
+<text  x="50.69" y="431.5" ></text>
+</g>
+<g >
+<title>uid AdiBags/libs/AceHook-3.0/AceHook-3.0.lua:87:8 (359,122 Bytes, 0.88%)</title><rect x="23.3" y="485" width="13.9" height="15.0" fill="rgb(243,178,42)" rx="2" ry="2" />
+<text  x="26.32" y="495.5" ></text>
+</g>
+<g >
+<title>uid AdiBags/libs/AceHook-3.0/AceHook-3.0.lua:100:8 (11,664 Bytes, 0.03%)</title><rect x="44.1" y="389" width="0.5" height="15.0" fill="rgb(224,88,21)" rx="2" ry="2" />
+<text  x="47.13" y="399.5" ></text>
+</g>
+<g >
+<title>_detalhes:UpdateClickThrough Details/gumps/janela_principal.lua:7277:0 (9,474 Bytes, 0.02%)</title><rect x="89.9" y="469" width="0.4" height="15.0" fill="rgb(244,179,42)" rx="2" ry="2" />
+<text  x="92.94" y="479.5" ></text>
+</g>
+<g >
+<title>registry:Fire AdiBags/libs/CallbackHandler-1.0/CallbackHandler-1.0.lua:49:1 (229,521 Bytes, 0.56%)</title><rect x="665.5" y="469" width="8.8" height="15.0" fill="rgb(215,48,11)" rx="2" ry="2" />
+<text  x="668.48" y="479.5" ></text>
+</g>
+<g >
+<title>registerCLEUEvent DBM-Core/DBM-Core.lua:1258:2 (4,981 Bytes, 0.01%)</title><rect x="46.7" y="421" width="0.2" height="15.0" fill="rgb(222,80,19)" rx="2" ry="2" />
+<text  x="49.66" y="431.5" ></text>
+</g>
+<g >
+<title>(anonymous) ExtendedCharacterStats/Modules/i18n/i18n.lua:48:29 (67,968 Bytes, 0.17%)</title><rect x="196.3" y="421" width="2.6" height="15.0" fill="rgb(243,175,42)" rx="2" ry="2" />
+<text  x="199.30" y="431.5" ></text>
+</g>
+<g >
+<title>LoadStringToTable DBM-Core/Libs/LibDeflate/LibDeflate.lua:1184:6 (98,304 Bytes, 0.24%)</title><rect x="184.9" y="373" width="3.8" height="15.0" fill="rgb(225,93,22)" rx="2" ry="2" />
+<text  x="187.91" y="383.5" ></text>
+</g>
+<g >
+<title>_detalhes:SendRaidData Details/core/network.lua:702:1 (4,484 Bytes, 0.01%)</title><rect x="188.7" y="437" width="0.2" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="191.74" y="447.5" ></text>
+</g>
+<g >
+<title>LibSerialize:DeserializeValue Auctionator/Libs/LibSerialize/LibSerialize.lua:1301:0 (25,072 Bytes, 0.06%)</title><rect x="669.9" y="373" width="0.9" height="15.0" fill="rgb(237,150,35)" rx="2" ry="2" />
+<text  x="672.88" y="383.5" ></text>
+</g>
+<g >
+<title>UpdateUnitAuraCacheData Plater/Plater_Auras.lua:585:26 (15,264 Bytes, 0.04%)</title><rect x="719.1" y="437" width="0.6" height="15.0" fill="rgb(216,52,12)" rx="2" ry="2" />
+<text  x="722.12" y="447.5" ></text>
+</g>
+<g >
+<title>NWB:createSettings NovaWorldBuffs/NWBData.lua:1270:0 (2,768 Bytes, 0.01%)</title><rect x="662.4" y="373" width="0.1" height="15.0" fill="rgb(207,12,2)" rx="2" ry="2" />
+<text  x="665.44" y="383.5" ></text>
+</g>
+<g >
+<title>LibSerialize:_ReadObject Auctionator/Libs/LibSerialize/LibSerialize.lua:655:0 (14,720 Bytes, 0.04%)</title><rect x="672.2" y="293" width="0.6" height="15.0" fill="rgb(221,77,18)" rx="2" ry="2" />
+<text  x="675.19" y="303.5" ></text>
+</g>
+<g >
+<title>NotesDB:GetAlternateName CharacterNotes/NotesDB.lua:101:0 (58,560 Bytes, 0.14%)</title><rect x="25.6" y="437" width="2.2" height="15.0" fill="rgb(206,6,1)" rx="2" ry="2" />
+<text  x="28.57" y="447.5" ></text>
+</g>
+<g >
+<title>Auras:Update ShadowedUnitFrames/modules/auras.lua:675:0 (6,075 Bytes, 0.01%)</title><rect x="1000.5" y="469" width="0.3" height="15.0" fill="rgb(242,170,40)" rx="2" ry="2" />
+<text  x="1003.53" y="479.5" ></text>
+</g>
+<g >
+<title>habilidade_dano:NovaTabela Details/classes/classe_damage_habilidade.lua:26:1 (5,808 Bytes, 0.01%)</title><rect x="149.1" y="421" width="0.2" height="15.0" fill="rgb(211,30,7)" rx="2" ry="2" />
+<text  x="152.10" y="431.5" ></text>
+</g>
+<g >
+<title>Plater.NameplateTick Plater/Plater.lua:6005:1 (228,232 Bytes, 0.56%)</title><rect x="946.4" y="405" width="8.8" height="15.0" fill="rgb(225,93,22)" rx="2" ry="2" />
+<text  x="949.36" y="415.5" ></text>
+</g>
+<g >
+<title>copyHookTables Plater/Plater.lua:11064:8 (447,283 Bytes, 1.09%)</title><rect x="674.5" y="405" width="17.2" height="15.0" fill="rgb(230,119,28)" rx="2" ry="2" />
+<text  x="677.47" y="415.5" ></text>
+</g>
+<g >
+<title>(anonymous) NovaWorldBuffs/NWBData.lua:5477:23 (43,472 Bytes, 0.11%)</title><rect x="594.8" y="485" width="1.7" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="597.83" y="495.5" ></text>
+</g>
+<g >
+<title>makeCastUID Details/Libs/LibClassicCasterino/LibClassicCasterino.lua:97:20 (4,170 Bytes, 0.01%)</title><rect x="373.4" y="453" width="0.1" height="15.0" fill="rgb(226,97,23)" rx="2" ry="2" />
+<text  x="376.39" y="463.5" ></text>
+</g>
+<g >
+<title>(anonymous) Details/core/gears.lua:2287:24 (318,279 Bytes, 0.78%)</title><rect x="77.0" y="485" width="12.2" height="15.0" fill="rgb(205,3,0)" rx="2" ry="2" />
+<text  x="79.98" y="495.5" ></text>
+</g>
+<g >
+<title>(anonymous) Auctionator/Libs/LibSerialize/LibSerialize.lua:776:43 (16,912 Bytes, 0.04%)</title><rect x="670.2" y="341" width="0.6" height="15.0" fill="rgb(212,33,8)" rx="2" ry="2" />
+<text  x="673.19" y="351.5" ></text>
+</g>
+<g >
+<title>Plater.EventHandler Plater/Plater.lua:3887:1 (660,479 Bytes, 1.61%)</title><rect x="694.4" y="485" width="25.5" height="15.0" fill="rgb(211,30,7)" rx="2" ry="2" />
+<text  x="697.42" y="495.5" >P..</text>
+</g>
+<g >
+<title>CreateDecompressState DBM-Core/Libs/LibDeflate/LibDeflate.lua:2277:6 (12,960 Bytes, 0.03%)</title><rect x="107.1" y="309" width="0.5" height="15.0" fill="rgb(253,224,53)" rx="2" ry="2" />
+<text  x="110.05" y="319.5" ></text>
+</g>
+<g >
+<title>LibSerialize:_ReadPair Auctionator/Libs/LibSerialize/LibSerialize.lua:760:0 (27,130 Bytes, 0.07%)</title><rect x="657.9" y="229" width="1.0" height="15.0" fill="rgb(252,218,52)" rx="2" ry="2" />
+<text  x="660.86" y="239.5" ></text>
+</g>
+<g >
+<title>DeserializeValue Details/Libs/AceSerializer-3.0/AceSerializer-3.0.lua:172:6 (81,126 Bytes, 0.20%)</title><rect x="103.9" y="309" width="3.1" height="15.0" fill="rgb(216,54,12)" rx="2" ry="2" />
+<text  x="106.87" y="319.5" ></text>
+</g>
+<g >
+<title>DBM:Schedule DBM-Core/DBM-Core.lua:2045:0 (580,088 Bytes, 1.42%)</title><rect x="49.9" y="437" width="22.3" height="15.0" fill="rgb(230,118,28)" rx="2" ry="2" />
+<text  x="52.87" y="447.5" >D..</text>
+</g>
+<g >
+<title>ThreatMeter:OnEvent Details_TinyThreat/Details_TinyThreat.lua:706:0 (17,168 Bytes, 0.04%)</title><rect x="89.3" y="469" width="0.6" height="15.0" fill="rgb(233,132,31)" rx="2" ry="2" />
+<text  x="92.28" y="479.5" ></text>
+</g>
+<g >
+<title>NWB:convertKeys NovaWorldBuffs/NWBData.lua:2237:0 (31,237 Bytes, 0.08%)</title><rect x="658.9" y="357" width="1.2" height="15.0" fill="rgb(243,179,42)" rx="2" ry="2" />
+<text  x="661.93" y="367.5" ></text>
+</g>
+<g >
+<title>combate:NovaTabela Details/classes/classe_combate.lua:345:1 (19,104 Bytes, 0.05%)</title><rect x="158.1" y="437" width="0.7" height="15.0" fill="rgb(243,178,42)" rx="2" ry="2" />
+<text  x="161.07" y="447.5" ></text>
+</g>
+<g >
+<title>mod:SPELL_AURA_REMOVED DBM-Raids-Vanilla/VanillaSoD_Gnomeregan/MechanicalMenagerie.lua:180:0 (4,548 Bytes, 0.01%)</title><rect x="43.2" y="437" width="0.2" height="15.0" fill="rgb(225,94,22)" rx="2" ry="2" />
+<text  x="46.22" y="447.5" ></text>
+</g>
+<g >
+<title>LibClassicCasterino (32,782 Bytes, 0.08%)</title><rect x="372.3" y="501" width="1.3" height="15.0" fill="rgb(254,225,54)" rx="2" ry="2" />
+<text  x="375.34" y="511.5" ></text>
+</g>
+<g >
+<title>NWB:convertKeys NovaWorldBuffs/NWBData.lua:2237:0 (24,197 Bytes, 0.06%)</title><rect x="659.2" y="325" width="0.9" height="15.0" fill="rgb(243,179,42)" rx="2" ry="2" />
+<text  x="662.20" y="335.5" ></text>
+</g>
+<g >
+<title>container_habilidades:PegaHabilidade Details/classes/container_habilidades.lua:62:1 (120,378 Bytes, 0.29%)</title><rect x="161.2" y="453" width="4.6" height="15.0" fill="rgb(248,201,48)" rx="2" ry="2" />
+<text  x="164.21" y="463.5" ></text>
+</g>
+<g >
+<title>(anonymous) TacoTip/Libs/LibClassicInspector/LibClassicInspector.lua:3071:23 (212,560 Bytes, 0.52%)</title><rect x="1003.8" y="485" width="8.2" height="15.0" fill="rgb(237,151,36)" rx="2" ry="2" />
+<text  x="1006.76" y="495.5" ></text>
+</g>
+<g >
+<title>NWB:pairsByKeys NovaWorldBuffs/NovaWorldBuffs.lua:4835:0 (528,832 Bytes, 1.29%)</title><rect x="613.3" y="453" width="20.3" height="15.0" fill="rgb(229,112,26)" rx="2" ry="2" />
+<text  x="616.25" y="463.5" ></text>
+</g>
+<g >
+<title>CompressDynamicHuffmanBlock DBM-Core/Libs/LibDeflate/LibDeflate.lua:1571:6 (7,068 Bytes, 0.02%)</title><rect x="91.1" y="405" width="0.3" height="15.0" fill="rgb(210,23,5)" rx="2" ry="2" />
+<text  x="94.14" y="415.5" ></text>
+</g>
+<g >
+<title>registry:Fire AdiBags/libs/CallbackHandler-1.0/CallbackHandler-1.0.lua:49:1 (389,581 Bytes, 0.95%)</title><rect x="985.0" y="469" width="15.0" height="15.0" fill="rgb(215,48,11)" rx="2" ry="2" />
+<text  x="988.01" y="479.5" ></text>
+</g>
+<g >
+<title>translate ExtendedCharacterStats/Modules/i18n/i18n.lua:20:6 (67,968 Bytes, 0.17%)</title><rect x="196.3" y="405" width="2.6" height="15.0" fill="rgb(247,197,47)" rx="2" ry="2" />
+<text  x="199.30" y="415.5" ></text>
+</g>
+<g >
+<title>NWB.j NovaWorldBuffs/NovaWorldBuffs.lua:10558:0 (3,373 Bytes, 0.01%)</title><rect x="661.1" y="373" width="0.1" height="15.0" fill="rgb(245,187,44)" rx="2" ry="2" />
+<text  x="664.12" y="383.5" ></text>
+</g>
+<g >
+<title>Deflate DBM-Core/Libs/LibDeflate/LibDeflate.lua:1763:6 (290,356 Bytes, 0.71%)</title><rect x="77.8" y="405" width="11.2" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="80.84" y="415.5" ></text>
+</g>
+<g >
+<title>HandleEvent DBM-Core/modules/Modules.lua:13:7 (6,961 Bytes, 0.02%)</title><rect x="42.2" y="485" width="0.3" height="15.0" fill="rgb(235,139,33)" rx="2" ry="2" />
+<text  x="45.23" y="495.5" ></text>
+</g>
+<g >
+<title>(anonymous) NovaWorldBuffs/NWBData.lua:2902:23 (6,960 Bytes, 0.02%)</title><rect x="594.6" y="485" width="0.2" height="15.0" fill="rgb(214,43,10)" rx="2" ry="2" />
+<text  x="597.56" y="495.5" ></text>
+</g>
+<g >
+<title>CreateReader DBM-Core/Libs/LibDeflate/LibDeflate.lua:2127:6 (13,624 Bytes, 0.03%)</title><rect x="666.1" y="357" width="0.5" height="15.0" fill="rgb(213,38,9)" rx="2" ry="2" />
+<text  x="669.05" y="367.5" ></text>
+</g>
+<g >
+<title>NotesDB:GetNote CharacterNotes/NotesDB.lua:107:0 (74,145 Bytes, 0.18%)</title><rect x="20.5" y="437" width="2.8" height="15.0" fill="rgb(226,99,23)" rx="2" ry="2" />
+<text  x="23.46" y="447.5" ></text>
+</g>
+<g >
+<title>_detalhes:UptadeRaidMembersCache Details/core/parser.lua:5089:1 (10,336 Bytes, 0.03%)</title><rect x="157.7" y="437" width="0.4" height="15.0" fill="rgb(226,99,23)" rx="2" ry="2" />
+<text  x="160.67" y="447.5" ></text>
+</g>
+<g >
+<title>DecompressDynamicBlock DBM-Core/Libs/LibDeflate/LibDeflate.lua:2506:6 (703,176 Bytes, 1.72%)</title><rect x="108.6" y="293" width="27.1" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="111.58" y="303.5" >D..</text>
+</g>
+<g >
+<title>atributo_misc:ColetarLixo Details/classes/classe_others.lua:2711:0 (35,328 Bytes, 0.09%)</title><rect x="193.9" y="453" width="1.4" height="15.0" fill="rgb(211,29,7)" rx="2" ry="2" />
+<text  x="196.92" y="463.5" ></text>
+</g>
+<g >
+<title>Overview:refresh Gargul/Interface/GDKP/Distribute/Overview.lua:288:0 (3,139 Bytes, 0.01%)</title><rect x="372.2" y="389" width="0.1" height="15.0" fill="rgb(233,133,31)" rx="2" ry="2" />
+<text  x="375.16" y="399.5" ></text>
+</g>
+<g >
+<title>WeakAuras (2,503,844 Bytes, 6.11%)</title><rect x="1493.5" y="501" width="96.5" height="15.0" fill="rgb(249,205,49)" rx="2" ry="2" />
+<text  x="1496.48" y="511.5" >WeakAuras</text>
+</g>
+<g >
+<title>(anonymous) Auctionator/Libs/LibSerialize/LibSerialize.lua:776:43 (13,760 Bytes, 0.03%)</title><rect x="670.3" y="277" width="0.5" height="15.0" fill="rgb(212,33,8)" rx="2" ry="2" />
+<text  x="673.29" y="287.5" ></text>
+</g>
+<g >
+<title>tips:CatalogActionBars RXPGuides/Tips.lua:357:0 (352,689 Bytes, 0.86%)</title><rect x="985.1" y="405" width="13.6" height="15.0" fill="rgb(221,77,18)" rx="2" ry="2" />
+<text  x="988.06" y="415.5" ></text>
+</g>
+<g >
+<title>NotesDB:FormatUnitName CharacterNotes/NotesDB.lua:81:0 (5,760 Bytes, 0.01%)</title><rect x="1066.9" y="405" width="0.2" height="15.0" fill="rgb(253,222,53)" rx="2" ry="2" />
+<text  x="1069.89" y="415.5" ></text>
+</g>
+<g >
+<title>DBM:COMBAT_LOG_EVENT_UNFILTERED DBM-Core/DBM-Core.lua:1515:1 (87,610 Bytes, 0.21%)</title><rect x="42.7" y="469" width="3.4" height="15.0" fill="rgb(224,91,21)" rx="2" ry="2" />
+<text  x="45.71" y="479.5" ></text>
+</g>
+<g >
+<title>Details:SendPlayerClassicInformation Details/core/gears.lua:2299:0 (317,361 Bytes, 0.77%)</title><rect x="90.3" y="485" width="12.2" height="15.0" fill="rgb(215,48,11)" rx="2" ry="2" />
+<text  x="93.31" y="495.5" ></text>
+</g>
+<g >
+<title>EventHandler.HandleOnEvent ExtendedCharacterStats/Modules/EventHandler.lua:25:0 (18,887 Bytes, 0.05%)</title><rect x="216.1" y="485" width="0.8" height="15.0" fill="rgb(236,146,35)" rx="2" ry="2" />
+<text  x="219.13" y="495.5" ></text>
+</g>
+<g >
+<title>Private.ActivateAuraEnvironmentForRegion WeakAuras/AuraEnvironment.lua:274:0 (14,160 Bytes, 0.03%)</title><rect x="1568.2" y="389" width="0.5" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="1571.19" y="399.5" ></text>
+</g>
+<g >
+<title>(anonymous) Details/core/plugins.lua:290:30 (17,168 Bytes, 0.04%)</title><rect x="89.3" y="485" width="0.6" height="15.0" fill="rgb(236,145,34)" rx="2" ry="2" />
+<text  x="92.28" y="495.5" ></text>
+</g>
+<g >
+<title>atributo_misc:NovaTabela Details/classes/classe_others.lua:176:0 (6,624 Bytes, 0.02%)</title><rect x="152.1" y="389" width="0.3" height="15.0" fill="rgb(237,148,35)" rx="2" ry="2" />
+<text  x="155.12" y="399.5" ></text>
+</g>
+<g >
+<title>atributo_damage:NovaTabela Details/classes/classe_damage.lua:351:1 (12,479 Bytes, 0.03%)</title><rect x="170.4" y="421" width="0.4" height="15.0" fill="rgb(205,2,0)" rx="2" ry="2" />
+<text  x="173.36" y="431.5" ></text>
+</g>
+<g >
+<title>LibSerialize:_ReadTable Auctionator/Libs/LibSerialize/LibSerialize.lua:695:0 (29,650 Bytes, 0.07%)</title><rect x="657.8" y="309" width="1.1" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="660.77" y="319.5" ></text>
+</g>
+<g >
+<title>GetHuffmanBitlenAndCode DBM-Core/Libs/LibDeflate/LibDeflate.lua:968:6 (32,872 Bytes, 0.08%)</title><rect x="177.8" y="357" width="1.2" height="15.0" fill="rgb(216,51,12)" rx="2" ry="2" />
+<text  x="180.78" y="367.5" ></text>
+</g>
+<g >
+<title>Tags:UpdatePowerType ShadowedUnitFrames/modules/tags.lua:93:0 (7,131 Bytes, 0.02%)</title><rect x="1000.3" y="453" width="0.2" height="15.0" fill="rgb(207,11,2)" rx="2" ry="2" />
+<text  x="1003.26" y="463.5" ></text>
+</g>
+<g >
+<title>(anonymous) Auctionator/Libs/LibSerialize/LibSerialize.lua:776:43 (13,760 Bytes, 0.03%)</title><rect x="672.2" y="277" width="0.5" height="15.0" fill="rgb(212,33,8)" rx="2" ry="2" />
+<text  x="675.21" y="287.5" ></text>
+</g>
+<g >
+<title>(anonymous) Plater/libs/DF/icon.lua:483:14 (15,120 Bytes, 0.04%)</title><rect x="732.5" y="437" width="0.6" height="15.0" fill="rgb(232,124,29)" rx="2" ry="2" />
+<text  x="735.47" y="447.5" ></text>
+</g>
+<g >
+<title>combate:CreateLastEventsTable Details/classes/classe_combate.lua:495:1 (29,472 Bytes, 0.07%)</title><rect x="144.2" y="453" width="1.1" height="15.0" fill="rgb(218,60,14)" rx="2" ry="2" />
+<text  x="147.20" y="463.5" ></text>
+</g>
+<g >
+<title>Questie (208,237 Bytes, 0.51%)</title><rect x="977.0" y="501" width="8.0" height="15.0" fill="rgb(209,18,4)" rx="2" ry="2" />
+<text  x="979.99" y="511.5" ></text>
+</g>
+<g >
+<title>UpdateUnitAuraCacheData Plater/Plater_Auras.lua:585:26 (19,992 Bytes, 0.05%)</title><rect x="945.4" y="405" width="0.8" height="15.0" fill="rgb(216,52,12)" rx="2" ry="2" />
+<text  x="948.41" y="415.5" ></text>
+</g>
+<g >
+<title>CharacterNotes:AddMessage CharacterNotes/CharacterNotes.lua:1470:0 (3,888 Bytes, 0.01%)</title><rect x="43.5" y="373" width="0.2" height="15.0" fill="rgb(219,65,15)" rx="2" ry="2" />
+<text  x="46.54" y="383.5" ></text>
+</g>
+<g >
+<title>_MP5:GetMP5ValueOnItems ExtendedCharacterStats/Modules/Data/MP5.lua:19:0 (208,928 Bytes, 0.51%)</title><rect x="198.9" y="357" width="8.1" height="15.0" fill="rgb(221,75,18)" rx="2" ry="2" />
+<text  x="201.94" y="367.5" ></text>
+</g>
+<g >
+<title>DeserializeValue Details/Libs/AceSerializer-3.0/AceSerializer-3.0.lua:172:6 (4,615 Bytes, 0.01%)</title><rect x="102.7" y="341" width="0.1" height="15.0" fill="rgb(216,54,12)" rx="2" ry="2" />
+<text  x="105.66" y="351.5" ></text>
+</g>
+<g >
+<title>(anonymous) Auctionator/Libs/LibSerialize/LibSerialize.lua:776:43 (22,760 Bytes, 0.06%)</title><rect x="660.2" y="325" width="0.9" height="15.0" fill="rgb(212,33,8)" rx="2" ry="2" />
+<text  x="663.23" y="335.5" ></text>
+</g>
+<g >
+<title>AceTimer:ScheduleTimer CharacterNotes/Libs/AceTimer-3.0/AceTimer-3.0.lua:94:0 (8,008 Bytes, 0.02%)</title><rect x="192.1" y="453" width="0.3" height="15.0" fill="rgb(249,205,49)" rx="2" ry="2" />
+<text  x="195.14" y="463.5" ></text>
+</g>
+<g >
+<title>Plater.OnHealthChange Plater/Plater.lua:5331:1 (3,523 Bytes, 0.01%)</title><rect x="694.7" y="437" width="0.1" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="697.67" y="447.5" ></text>
+</g>
+<g >
+<title>(anonymous) TacoTip/main.lua:46:43 (1,413,136 Bytes, 3.45%)</title><rect x="1012.0" y="453" width="54.4" height="15.0" fill="rgb(247,193,46)" rx="2" ry="2" />
+<text  x="1014.97" y="463.5" >(anon..</text>
+</g>
+<g >
+<title>LibDeflate:DecompressDeflate DBM-Core/Libs/LibDeflate/LibDeflate.lua:2742:0 (742,863 Bytes, 1.81%)</title><rect x="107.1" y="341" width="28.6" height="15.0" fill="rgb(245,186,44)" rx="2" ry="2" />
+<text  x="110.05" y="351.5" >Li..</text>
+</g>
+<g >
+<title>nameplateFrame:Show DBM-Core/DBM-Nameplate.lua:812:0 (4,440 Bytes, 0.01%)</title><rect x="42.8" y="421" width="0.2" height="15.0" fill="rgb(248,201,48)" rx="2" ry="2" />
+<text  x="45.84" y="431.5" ></text>
+</g>
+<g >
+<title>_detalhes:PluginDpsUpdate Details/core/plugins_statusbar.lua:665:2 (5,014 Bytes, 0.01%)</title><rect x="195.3" y="469" width="0.2" height="15.0" fill="rgb(222,80,19)" rx="2" ry="2" />
+<text  x="198.29" y="479.5" ></text>
+</g>
+<g >
+<title>(anonymous) Plater/libs/LibClassicDurations/core.lua:86:23 (93,384 Bytes, 0.23%)</title><rect x="373.6" y="485" width="3.6" height="15.0" fill="rgb(220,72,17)" rx="2" ry="2" />
+<text  x="376.60" y="495.5" ></text>
+</g>
+<g >
+<title>SetTimer Plater/libs/LibClassicDurations/core.lua:395:6 (4,048 Bytes, 0.01%)</title><rect x="377.0" y="421" width="0.2" height="15.0" fill="rgb(232,127,30)" rx="2" ry="2" />
+<text  x="380.03" y="431.5" ></text>
+</g>
+<g >
+<title>NotesDB:FormatUnitName CharacterNotes/NotesDB.lua:81:0 (58,560 Bytes, 0.14%)</title><rect x="32.4" y="421" width="2.3" height="15.0" fill="rgb(253,222,53)" rx="2" ry="2" />
+<text  x="35.44" y="431.5" ></text>
+</g>
+<g >
+<title>(anonymous) ShadowedUnitFrames/modules/units.lua:342:45 (7,131 Bytes, 0.02%)</title><rect x="1000.3" y="485" width="0.2" height="15.0" fill="rgb(247,193,46)" rx="2" ry="2" />
+<text  x="1003.26" y="495.5" ></text>
+</g>
+<g >
+<title>LibSerialize:_ReadObject Auctionator/Libs/LibSerialize/LibSerialize.lua:655:0 (22,760 Bytes, 0.06%)</title><rect x="660.2" y="341" width="0.9" height="15.0" fill="rgb(221,77,18)" rx="2" ry="2" />
+<text  x="663.23" y="351.5" ></text>
+</g>
+<g >
+<title>habilidade_misc:NovaTabela Details/classes/classe_others_habilidade.lua:24:1 (3,680 Bytes, 0.01%)</title><rect x="175.8" y="341" width="0.2" height="15.0" fill="rgb(211,28,6)" rx="2" ry="2" />
+<text  x="178.81" y="351.5" ></text>
+</g>
+<g >
+<title>eventFunctions.NAME_PLATE_UNIT_ADDED Plater/Plater.lua:3164:26 (613,167 Bytes, 1.50%)</title><rect x="694.4" y="469" width="23.7" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="697.42" y="479.5" >e..</text>
+</g>
+<g >
+<title>DBM:PlaySoundFile DBM-Core/DBM-Core.lua:6448:1 (21,492 Bytes, 0.05%)</title><rect x="44.6" y="389" width="0.9" height="15.0" fill="rgb(236,143,34)" rx="2" ry="2" />
+<text  x="47.64" y="399.5" ></text>
+</g>
+<g >
+<title>GearInfos:UpdateInspectGearColorFrames ExtendedCharacterStats/Modules/GearInfos.lua:114:0 (18,887 Bytes, 0.05%)</title><rect x="216.1" y="469" width="0.8" height="15.0" fill="rgb(228,110,26)" rx="2" ry="2" />
+<text  x="219.13" y="479.5" ></text>
+</g>
+<g >
+<title>Plater.UpdateLifePercentText Plater/Plater.lua:7332:1 (68,947 Bytes, 0.17%)</title><rect x="691.7" y="421" width="2.7" height="15.0" fill="rgb(233,129,30)" rx="2" ry="2" />
+<text  x="694.72" y="431.5" ></text>
+</g>
+<g >
+<title>DBM:AddMsg DBM-Core/DBM-Core.lua:7086:0 (12,381 Bytes, 0.03%)</title><rect x="44.1" y="405" width="0.5" height="15.0" fill="rgb(250,208,49)" rx="2" ry="2" />
+<text  x="47.10" y="415.5" ></text>
+</g>
+<g >
+<title>atributo_damage:NovaTabela Details/classes/classe_damage.lua:351:1 (41,472 Bytes, 0.10%)</title><rect x="159.6" y="437" width="1.6" height="15.0" fill="rgb(205,2,0)" rx="2" ry="2" />
+<text  x="162.61" y="447.5" ></text>
+</g>
+<g >
+<title>container_habilidades:PegaHabilidade Details/classes/container_habilidades.lua:62:1 (3,960 Bytes, 0.01%)</title><rect x="175.8" y="357" width="0.2" height="15.0" fill="rgb(248,201,48)" rx="2" ry="2" />
+<text  x="178.80" y="367.5" ></text>
+</g>
+<g >
+<title>_detalhes:ScheduleSyncPlayerActorData Details/core/control.lua:505:2 (317,568 Bytes, 0.77%)</title><rect x="176.7" y="485" width="12.2" height="15.0" fill="rgb(242,172,41)" rx="2" ry="2" />
+<text  x="179.67" y="495.5" ></text>
+</g>
+<g >
+<title>historico:adicionar Details/classes/container_historico.lua:228:0 (58,520 Bytes, 0.14%)</title><rect x="173.8" y="437" width="2.3" height="15.0" fill="rgb(243,178,42)" rx="2" ry="2" />
+<text  x="176.81" y="447.5" ></text>
+</g>
+<g >
+<title>container_habilidades:PegaHabilidade Details/classes/container_habilidades.lua:62:1 (11,728 Bytes, 0.03%)</title><rect x="148.5" y="453" width="0.4" height="15.0" fill="rgb(248,201,48)" rx="2" ry="2" />
+<text  x="151.48" y="463.5" ></text>
+</g>
+<g >
+<title>_detalhes:ClockPluginTick Details/core/plugins_statusbar.lua:947:2 (7,006 Bytes, 0.02%)</title><rect x="191.9" y="469" width="0.2" height="15.0" fill="rgb(225,95,22)" rx="2" ry="2" />
+<text  x="194.87" y="479.5" ></text>
+</g>
+<g >
+<title>Plater.UpdateAuras_Automatic Plater/Plater_Auras.lua:2106:1 (317,400 Bytes, 0.77%)</title><rect x="703.6" y="421" width="12.2" height="15.0" fill="rgb(249,202,48)" rx="2" ry="2" />
+<text  x="706.60" y="431.5" ></text>
+</g>
+<g >
+<title>(anonymous) Gargul/Classes/TradeTime.lua:46:11 (32,792 Bytes, 0.08%)</title><rect x="217.5" y="453" width="1.3" height="15.0" fill="rgb(205,1,0)" rx="2" ry="2" />
+<text  x="220.54" y="463.5" ></text>
+</g>
+<g >
+<title>(anonymous) TacoTip/main.lua:46:43 (11,043,028 Bytes, 26.94%)</title><rect x="1067.8" y="469" width="425.7" height="15.0" fill="rgb(247,193,46)" rx="2" ry="2" />
+<text  x="1070.77" y="479.5" >(anonymous) TacoTip/main.lua:46:43</text>
+</g>
+<g >
+<title>Plater.CreateShowAuraIconAnimation Plater/Plater_Auras.lua:1318:1 (3,532 Bytes, 0.01%)</title><rect x="732.1" y="437" width="0.1" height="15.0" fill="rgb(239,158,37)" rx="2" ry="2" />
+<text  x="735.09" y="447.5" ></text>
+</g>
+<g >
+<title>CharacterNotes:OnTooltipSetUnit CharacterNotes/CharacterNotes.lua:1370:0 (359,122 Bytes, 0.88%)</title><rect x="23.3" y="469" width="13.9" height="15.0" fill="rgb(245,188,44)" rx="2" ry="2" />
+<text  x="26.32" y="479.5" ></text>
+</g>
+<g >
+<title>new CharacterNotes/Libs/AceTimer-3.0/AceTimer-3.0.lua:32:6 (177,045 Bytes, 0.43%)</title><rect x="1583.2" y="389" width="6.8" height="15.0" fill="rgb(247,194,46)" rx="2" ry="2" />
+<text  x="1586.17" y="399.5" ></text>
+</g>
+<g >
+<title>Plater.NameplateTick Plater/Plater.lua:6005:1 (5,843,973 Bytes, 14.26%)</title><rect x="719.9" y="485" width="225.3" height="15.0" fill="rgb(225,93,22)" rx="2" ry="2" />
+<text  x="722.88" y="495.5" >Plater.NameplateTick Plater/P..</text>
+</g>
+<g >
+<title>Plater.AddToAuraUpdate Plater/Plater_Auras.lua:577:0 (57,120 Bytes, 0.14%)</title><rect x="694.9" y="453" width="2.2" height="15.0" fill="rgb(225,96,23)" rx="2" ry="2" />
+<text  x="697.88" y="463.5" ></text>
+</g>
+<g >
+<title>Plater.AddToAuraUpdate Plater/Plater_Auras.lua:577:0 (18,800 Bytes, 0.05%)</title><rect x="719.0" y="453" width="0.7" height="15.0" fill="rgb(225,96,23)" rx="2" ry="2" />
+<text  x="721.98" y="463.5" ></text>
+</g>
+<g >
+<title>LibSerialize:Deserialize Auctionator/Libs/LibSerialize/LibSerialize.lua:1337:0 (23,720 Bytes, 0.06%)</title><rect x="660.2" y="373" width="0.9" height="15.0" fill="rgb(217,58,13)" rx="2" ry="2" />
+<text  x="663.20" y="383.5" ></text>
+</g>
+<g >
+<title>NWB:combatLogEventUnfiltered NovaWorldBuffs/NovaWorldBuffs.lua:1672:0 (2,931 Bytes, 0.01%)</title><rect x="611.8" y="469" width="0.1" height="15.0" fill="rgb(237,150,35)" rx="2" ry="2" />
+<text  x="614.77" y="479.5" ></text>
+</g>
+<g >
+<title>OnEvent AtlasLootClassic/Libs/AceComm-3.0/AceComm-3.0.lua:242:6 (860,194 Bytes, 2.10%)</title><rect x="102.5" y="485" width="33.2" height="15.0" fill="rgb(235,142,34)" rx="2" ry="2" />
+<text  x="105.54" y="495.5" >On..</text>
+</g>
+<g >
+<title>AceComm:OnReceiveMultipartLast AtlasLootClassic/Libs/AceComm-3.0/AceComm-3.0.lua:199:1 (859,925 Bytes, 2.10%)</title><rect x="102.5" y="469" width="33.2" height="15.0" fill="rgb(231,122,29)" rx="2" ry="2" />
+<text  x="105.54" y="479.5" >Ac..</text>
+</g>
+<g >
+<title>updateAuras NovaWorldBuffs/NWBData.lua:5445:6 (43,472 Bytes, 0.11%)</title><rect x="594.8" y="469" width="1.7" height="15.0" fill="rgb(240,161,38)" rx="2" ry="2" />
+<text  x="597.83" y="479.5" ></text>
+</g>
+<g >
+<title>f:CHAT_MSG_ADDON TacoTip/Libs/LibClassicInspector/LibClassicInspector.lua:2963:0 (194,126 Bytes, 0.47%)</title><rect x="377.2" y="469" width="7.5" height="15.0" fill="rgb(235,140,33)" rx="2" ry="2" />
+<text  x="380.20" y="479.5" ></text>
+</g>
+<g >
+<title>(anonymous) Plater/libs/DF/icon.lua:254:11 (10,116 Bytes, 0.02%)</title><rect x="715.8" y="405" width="0.4" height="15.0" fill="rgb(227,102,24)" rx="2" ry="2" />
+<text  x="718.83" y="415.5" ></text>
+</g>
+<g >
+<title>Events:fire Gargul/Classes/Events.lua:196:0 (8,706 Bytes, 0.02%)</title><rect x="372.0" y="453" width="0.3" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="374.99" y="463.5" ></text>
+</g>
+<g >
+<title>Plater.GetAllShownPlates Plater/Plater.lua:1247:1 (10,896 Bytes, 0.03%)</title><rect x="718.6" y="437" width="0.4" height="15.0" fill="rgb(228,108,25)" rx="2" ry="2" />
+<text  x="721.56" y="447.5" ></text>
+</g>
+<g >
+<title>LibSerialize:_ReadTable Auctionator/Libs/LibSerialize/LibSerialize.lua:695:0 (16,912 Bytes, 0.04%)</title><rect x="670.2" y="325" width="0.6" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="673.19" y="335.5" ></text>
+</g>
+<g >
+<title>network.ItemLevel_Received Details/core/network.lua:151:1 (852,274 Bytes, 2.08%)</title><rect x="102.8" y="389" width="32.9" height="15.0" fill="rgb(240,162,38)" rx="2" ry="2" />
+<text  x="105.84" y="399.5" >ne..</text>
+</g>
+<g >
+<title>NotesDB:FormatUnitName CharacterNotes/NotesDB.lua:81:0 (58,560 Bytes, 0.14%)</title><rect x="23.3" y="437" width="2.3" height="15.0" fill="rgb(253,222,53)" rx="2" ry="2" />
+<text  x="26.32" y="447.5" ></text>
+</g>
+<g >
+<title>(anonymous) Auctionator/Libs/LibSerialize/LibSerialize.lua:852:43 (19,527 Bytes, 0.05%)</title><rect x="658.1" y="133" width="0.8" height="15.0" fill="rgb(244,182,43)" rx="2" ry="2" />
+<text  x="661.14" y="143.5" ></text>
+</g>
+<g >
+<title>Plater.UpdatePlateSize Plater/Plater.lua:5681:1 (46,032 Bytes, 0.11%)</title><rect x="716.3" y="437" width="1.8" height="15.0" fill="rgb(210,26,6)" rx="2" ry="2" />
+<text  x="719.28" y="447.5" ></text>
+</g>
+<g >
+<title>_detalhes:SendCharacterData Details/core/network.lua:83:1 (317,568 Bytes, 0.77%)</title><rect x="176.7" y="469" width="12.2" height="15.0" fill="rgb(220,72,17)" rx="2" ry="2" />
+<text  x="179.67" y="479.5" ></text>
+</g>
+<g >
+<title>table.copy Plater/libs/DF/fw.lua:740:0 (413,435 Bytes, 1.01%)</title><rect x="675.8" y="389" width="15.9" height="15.0" fill="rgb(239,159,38)" rx="2" ry="2" />
+<text  x="678.78" y="399.5" ></text>
+</g>
+<g >
+<title>DecodeUntilEndOfBlock DBM-Core/Libs/LibDeflate/LibDeflate.lua:2353:6 (6,144 Bytes, 0.01%)</title><rect x="667.2" y="341" width="0.2" height="15.0" fill="rgb(225,94,22)" rx="2" ry="2" />
+<text  x="670.21" y="351.5" ></text>
+</g>
+<g >
+<title>platerInternal.CreateAuraIcon Plater/Plater_Auras.lua:1235:1 (6,532 Bytes, 0.02%)</title><rect x="732.2" y="437" width="0.3" height="15.0" fill="rgb(228,109,26)" rx="2" ry="2" />
+<text  x="735.22" y="447.5" ></text>
+</g>
+<g >
+<title>DecompressFixBlock DBM-Core/Libs/LibDeflate/LibDeflate.lua:2496:6 (33,024 Bytes, 0.08%)</title><rect x="667.7" y="357" width="1.3" height="15.0" fill="rgb(220,73,17)" rx="2" ry="2" />
+<text  x="670.72" y="367.5" ></text>
+</g>
+<g >
+<title>LibSerialize:_ClearReferences Auctionator/Libs/LibSerialize/LibSerialize.lua:643:0 (2,880 Bytes, 0.01%)</title><rect x="672.0" y="357" width="0.1" height="15.0" fill="rgb(241,168,40)" rx="2" ry="2" />
+<text  x="675.00" y="367.5" ></text>
+</g>
+<g >
+<title>handleEvent DBM-Core/DBM-Core.lua:1144:7 (771,812 Bytes, 1.88%)</title><rect x="42.5" y="485" width="29.7" height="15.0" fill="rgb(205,4,1)" rx="2" ry="2" />
+<text  x="45.49" y="495.5" >ha..</text>
+</g>
+<g >
+<title>mod:OnCombatStart DBM-Raids-Vanilla/VanillaSoD_Gnomeregan/MekgineerThermaplugg.lua:125:0 (10,573 Bytes, 0.03%)</title><rect x="47.5" y="437" width="0.4" height="15.0" fill="rgb(234,136,32)" rx="2" ry="2" />
+<text  x="50.49" y="447.5" ></text>
+</g>
+<g >
+<title>DBT:CreateBar DBM-StatusBarTimers/DBT.lua:277:1 (8,620 Bytes, 0.02%)</title><rect x="45.5" y="405" width="0.3" height="15.0" fill="rgb(235,141,33)" rx="2" ry="2" />
+<text  x="48.49" y="415.5" ></text>
+</g>
+<g >
+<title>FadeHandler.Fader Details/core/util.lua:510:0 (5,792 Bytes, 0.01%)</title><rect x="157.1" y="389" width="0.2" height="15.0" fill="rgb(207,13,3)" rx="2" ry="2" />
+<text  x="160.09" y="399.5" ></text>
+</g>
+<g >
+<title>Private.UpdatedTriggerState WeakAuras/WeakAuras.lua:4686:0 (219,746 Bytes, 0.54%)</title><rect x="1564.9" y="437" width="8.5" height="15.0" fill="rgb(240,162,38)" rx="2" ry="2" />
+<text  x="1567.94" y="447.5" ></text>
+</g>
+<g >
+<title>Private.ActivateAuraEnvironmentForRegion WeakAuras/AuraEnvironment.lua:274:0 (39,840 Bytes, 0.10%)</title><rect x="1575.8" y="453" width="1.5" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="1578.77" y="463.5" ></text>
+</g>
+<g >
+<title>Threat:PlayerEnterCombat Details/core/plugins_statusbar.lua:1101:2 (2,880 Bytes, 0.01%)</title><rect x="157.5" y="405" width="0.1" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="160.49" y="415.5" ></text>
+</g>
+<g >
+<title>LibSerialize:_ReadInt Auctionator/Libs/LibSerialize/LibSerialize.lua:754:0 (4,375 Bytes, 0.01%)</title><rect x="658.7" y="53" width="0.1" height="15.0" fill="rgb(209,21,5)" rx="2" ry="2" />
+<text  x="661.68" y="63.5" ></text>
+</g>
+<g >
+<title>f:COMBAT_LOG_EVENT_UNFILTERED Plater/libs/LibClassicDurations/core.lua:511:0 (93,048 Bytes, 0.23%)</title><rect x="373.6" y="469" width="3.6" height="15.0" fill="rgb(209,21,5)" rx="2" ry="2" />
+<text  x="376.60" y="479.5" ></text>
+</g>
+<g >
+<title>parser:missed Details/core/parser.lua:1216:1 (12,848 Bytes, 0.03%)</title><rect x="148.5" y="469" width="0.5" height="15.0" fill="rgb(241,168,40)" rx="2" ry="2" />
+<text  x="151.48" y="479.5" ></text>
+</g>
+<g >
+<title>NWB:convertKeys NovaWorldBuffs/NWBData.lua:2237:0 (31,709 Bytes, 0.08%)</title><rect x="658.9" y="373" width="1.2" height="15.0" fill="rgb(243,179,42)" rx="2" ry="2" />
+<text  x="661.91" y="383.5" ></text>
+</g>
+<g >
+<title>AceTimer:ScheduleTimer CharacterNotes/Libs/AceTimer-3.0/AceTimer-3.0.lua:94:0 (177,045 Bytes, 0.43%)</title><rect x="1583.2" y="405" width="6.8" height="15.0" fill="rgb(249,205,49)" rx="2" ry="2" />
+<text  x="1586.17" y="415.5" ></text>
+</g>
+<g >
+<title>ReconstroiMapa Details/core/meta.lua:44:8 (28,744 Bytes, 0.07%)</title><rect x="194.2" y="421" width="1.1" height="15.0" fill="rgb(227,103,24)" rx="2" ry="2" />
+<text  x="197.17" y="431.5" ></text>
+</g>
+<g >
+<title>ScanUnitWithFilter WeakAuras/BuffTrigger2.lua:1871:23 (23,232 Bytes, 0.06%)</title><rect x="1510.8" y="437" width="0.9" height="15.0" fill="rgb(232,125,29)" rx="2" ry="2" />
+<text  x="1513.79" y="447.5" ></text>
+</g>
+<g >
+<title>TT_GS:GetScore TacoTip/gearscore.lua:236:0 (1,386,384 Bytes, 3.38%)</title><rect x="1012.9" y="437" width="53.5" height="15.0" fill="rgb(215,47,11)" rx="2" ry="2" />
+<text  x="1015.94" y="447.5" >TT_GS..</text>
+</g>
+<g >
+<title>DecodeUntilEndOfBlock DBM-Core/Libs/LibDeflate/LibDeflate.lua:2353:6 (589,824 Bytes, 1.44%)</title><rect x="111.9" y="277" width="22.7" height="15.0" fill="rgb(225,94,22)" rx="2" ry="2" />
+<text  x="114.89" y="287.5" >D..</text>
+</g>
+<g >
+<title>NotesDB:ParseName CharacterNotes/NotesDB.lua:70:0 (5,760 Bytes, 0.01%)</title><rect x="1067.1" y="389" width="0.2" height="15.0" fill="rgb(214,42,10)" rx="2" ry="2" />
+<text  x="1070.11" y="399.5" ></text>
+</g>
+<g >
+<title>container_habilidades:PegaHabilidade Details/classes/container_habilidades.lua:62:1 (6,312 Bytes, 0.02%)</title><rect x="149.1" y="437" width="0.2" height="15.0" fill="rgb(248,201,48)" rx="2" ry="2" />
+<text  x="152.08" y="447.5" ></text>
+</g>
+<g >
+<title>GL:tableGet Gargul/Classes/Helpers.lua:2832:0 (2,697 Bytes, 0.01%)</title><rect x="372.2" y="357" width="0.1" height="15.0" fill="rgb(232,127,30)" rx="2" ry="2" />
+<text  x="375.18" y="367.5" ></text>
+</g>
+<g >
+<title>LibDeflate:CompressDeflate DBM-Core/Libs/LibDeflate/LibDeflate.lua:2039:0 (291,928 Bytes, 0.71%)</title><rect x="77.8" y="437" width="11.3" height="15.0" fill="rgb(250,208,49)" rx="2" ry="2" />
+<text  x="80.80" y="447.5" ></text>
+</g>
+<g >
+<title>NotesDB:TitleCase CharacterNotes/NotesDB.lua:30:0 (6,870 Bytes, 0.02%)</title><rect x="20.7" y="389" width="0.3" height="15.0" fill="rgb(227,101,24)" rx="2" ry="2" />
+<text  x="23.74" y="399.5" ></text>
+</g>
+<g >
+<title>atributo_damage:NovaTabela Details/classes/classe_damage.lua:351:1 (5,184 Bytes, 0.01%)</title><rect x="171.6" y="421" width="0.2" height="15.0" fill="rgb(205,2,0)" rx="2" ry="2" />
+<text  x="174.63" y="431.5" ></text>
+</g>
+<g >
+<title>(anonymous) DBM-Core/DBM-InfoFrame.lua:1188:40 (129,360 Bytes, 0.32%)</title><rect x="37.2" y="485" width="5.0" height="15.0" fill="rgb(208,15,3)" rx="2" ry="2" />
+<text  x="40.24" y="495.5" ></text>
+</g>
+<g >
+<title>createFrame DBM-Core/DBM-InfoFrame.lua:238:0 (6,056 Bytes, 0.01%)</title><rect x="47.0" y="405" width="0.2" height="15.0" fill="rgb(247,196,46)" rx="2" ry="2" />
+<text  x="50.00" y="415.5" ></text>
+</g>
+<g >
+<title>Inflate DBM-Core/Libs/LibDeflate/LibDeflate.lua:2620:6 (62,665 Bytes, 0.15%)</title><rect x="666.6" y="373" width="2.4" height="15.0" fill="rgb(252,220,52)" rx="2" ry="2" />
+<text  x="669.58" y="383.5" ></text>
+</g>
+<g >
+<title>habilidade_dano:Add Details/classes/classe_damage_habilidade.lua:88:1 (13,552 Bytes, 0.03%)</title><rect x="165.8" y="453" width="0.6" height="15.0" fill="rgb(236,146,35)" rx="2" ry="2" />
+<text  x="168.85" y="463.5" ></text>
+</g>
+<g >
+<title>Plater (7,851,272 Bytes, 19.16%)</title><rect x="674.3" y="501" width="302.7" height="15.0" fill="rgb(234,134,32)" rx="2" ry="2" />
+<text  x="677.32" y="511.5" >Plater</text>
+</g>
+<g >
+<title>GL:getContainerItemInfo Gargul/Classes/Helpers.lua:1924:0 (1,613,118 Bytes, 3.94%)</title><rect x="309.3" y="357" width="62.2" height="15.0" fill="rgb(228,109,26)" rx="2" ry="2" />
+<text  x="312.29" y="367.5" >GL:get..</text>
+</g>
+<g >
+<title>Plater.NameplateTick Plater/Plater.lua:6005:1 (158,094 Bytes, 0.39%)</title><rect x="697.1" y="453" width="6.1" height="15.0" fill="rgb(225,93,22)" rx="2" ry="2" />
+<text  x="700.09" y="463.5" ></text>
+</g>
+<g >
+<title>container_habilidades:NovoContainer Details/classes/container_habilidades.lua:35:1 (6,624 Bytes, 0.02%)</title><rect x="152.7" y="405" width="0.2" height="15.0" fill="rgb(245,187,44)" rx="2" ry="2" />
+<text  x="155.69" y="415.5" ></text>
+</g>
+<g >
+<title>_MP5:GetMP5ValueOnItems ExtendedCharacterStats/Modules/Data/MP5.lua:19:0 (218,097 Bytes, 0.53%)</title><rect x="207.0" y="373" width="8.4" height="15.0" fill="rgb(221,75,18)" rx="2" ry="2" />
+<text  x="210.00" y="383.5" ></text>
+</g>
+<g >
+<title>DF:GetRoleByClassicTalentTree Plater/libs/DF/fw.lua:205:0 (8,544 Bytes, 0.02%)</title><rect x="89.6" y="421" width="0.3" height="15.0" fill="rgb(228,106,25)" rx="2" ry="2" />
+<text  x="92.61" y="431.5" ></text>
+</g>
+<g >
+<title>new CharacterNotes/Libs/AceTimer-3.0/AceTimer-3.0.lua:32:6 (21,112 Bytes, 0.05%)</title><rect x="218.0" y="405" width="0.8" height="15.0" fill="rgb(247,194,46)" rx="2" ry="2" />
+<text  x="220.98" y="415.5" ></text>
+</g>
+<g >
+<title>DF.UnitGroupRolesAssigned Details/Libs/DetailsFramework/lib/fw.lua:239:0 (8,544 Bytes, 0.02%)</title><rect x="89.6" y="437" width="0.3" height="15.0" fill="rgb(229,112,26)" rx="2" ry="2" />
+<text  x="92.61" y="447.5" ></text>
+</g>
+<g >
+<title>NWB:convertKeys NovaWorldBuffs/NWBData.lua:2237:0 (28,501 Bytes, 0.07%)</title><rect x="659.0" y="341" width="1.1" height="15.0" fill="rgb(243,179,42)" rx="2" ry="2" />
+<text  x="662.04" y="351.5" ></text>
+</g>
+<g >
+<title>parser:dead Details/core/parser.lua:3448:1 (6,016 Bytes, 0.01%)</title><rect x="140.2" y="469" width="0.2" height="15.0" fill="rgb(229,111,26)" rx="2" ry="2" />
+<text  x="143.17" y="479.5" ></text>
+</g>
+<g >
+<title>CompressDeflateInternal DBM-Core/Libs/LibDeflate/LibDeflate.lua:1960:6 (291,928 Bytes, 0.71%)</title><rect x="177.5" y="405" width="11.2" height="15.0" fill="rgb(247,193,46)" rx="2" ry="2" />
+<text  x="180.46" y="415.5" ></text>
+</g>
+<g >
+<title>NotesDB:FormatNameWithRealm CharacterNotes/NotesDB.lua:43:0 (14,135 Bytes, 0.03%)</title><rect x="20.5" y="405" width="0.5" height="15.0" fill="rgb(231,122,29)" rx="2" ry="2" />
+<text  x="23.46" y="415.5" ></text>
+</g>
+<g >
+<title>somar_habilidades Details/classes/classe_others.lua:2463:26 (6,984 Bytes, 0.02%)</title><rect x="175.8" y="373" width="0.3" height="15.0" fill="rgb(206,6,1)" rx="2" ry="2" />
+<text  x="178.80" y="383.5" ></text>
+</g>
+<g >
+<title>FazColeta Details/core/meta.lua:858:7 (7,192 Bytes, 0.02%)</title><rect x="193.1" y="421" width="0.3" height="15.0" fill="rgb(244,181,43)" rx="2" ry="2" />
+<text  x="196.08" y="431.5" ></text>
+</g>
+<g >
+<title>habilidade_dano:NovaTabela Details/classes/classe_damage_habilidade.lua:26:1 (15,488 Bytes, 0.04%)</title><rect x="171.0" y="421" width="0.6" height="15.0" fill="rgb(211,30,7)" rx="2" ry="2" />
+<text  x="173.97" y="431.5" ></text>
+</g>
+<g >
+<title>(anonymous) Auctionator/Libs/LibSerialize/LibSerialize.lua:776:43 (20,240 Bytes, 0.05%)</title><rect x="660.3" y="197" width="0.8" height="15.0" fill="rgb(212,33,8)" rx="2" ry="2" />
+<text  x="663.32" y="207.5" ></text>
+</g>
+<g >
+<title>mod:SPELL_CAST_SUCCESS DBM-Raids-Vanilla/VanillaSoD_Gnomeregan/MechanicalMenagerie.lua:147:0 (4,434 Bytes, 0.01%)</title><rect x="45.9" y="437" width="0.2" height="15.0" fill="rgb(248,197,47)" rx="2" ry="2" />
+<text  x="48.91" y="447.5" ></text>
+</g>
+<g >
+<title>NWB:config NovaWorldBuffs/Options.lua:3750:0 (2,872 Bytes, 0.01%)</title><rect x="661.4" y="325" width="0.1" height="15.0" fill="rgb(248,202,48)" rx="2" ry="2" />
+<text  x="664.42" y="335.5" ></text>
+</g>
+<g >
+<title>GetBlockDynamicHuffmanHeader DBM-Core/Libs/LibDeflate/LibDeflate.lua:1491:6 (35,232 Bytes, 0.09%)</title><rect x="78.1" y="389" width="1.4" height="15.0" fill="rgb(216,51,12)" rx="2" ry="2" />
+<text  x="81.12" y="399.5" ></text>
+</g>
+<g >
+<title>Private.ActivateAuraEnvironment WeakAuras/AuraEnvironment.lua:278:0 (1,379,640 Bytes, 3.37%)</title><rect x="1511.8" y="437" width="53.1" height="15.0" fill="rgb(233,129,31)" rx="2" ry="2" />
+<text  x="1514.75" y="447.5" >Priva..</text>
+</g>
+<g >
+<title>_FormatStatsText ExtendedCharacterStats/Modules/Stats.lua:178:19 (532,668 Bytes, 1.30%)</title><rect x="195.6" y="437" width="20.5" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="198.59" y="447.5" ></text>
+</g>
+<g >
+<title>parser:add_bad_debuff_uptime Details/core/parser.lua:2331:1 (3,144 Bytes, 0.01%)</title><rect x="172.3" y="453" width="0.1" height="15.0" fill="rgb(230,118,28)" rx="2" ry="2" />
+<text  x="175.31" y="463.5" ></text>
+</g>
+<g >
+<title>NovaWorldBuffs (7,461,177 Bytes, 18.20%)</title><rect x="386.7" y="501" width="287.6" height="15.0" fill="rgb(251,215,51)" rx="2" ry="2" />
+<text  x="389.70" y="511.5" >NovaWorldBuffs</text>
+</g>
+<g >
+<title>NotesDB:ParseName CharacterNotes/NotesDB.lua:70:0 (29,280 Bytes, 0.07%)</title><rect x="22.2" y="405" width="1.1" height="15.0" fill="rgb(214,42,10)" rx="2" ry="2" />
+<text  x="25.19" y="415.5" ></text>
+</g>
+<g >
+<title>EventHandler WeakAuras/BuffTrigger2.lua:2180:6 (469,248 Bytes, 1.14%)</title><rect x="1493.6" y="485" width="18.1" height="15.0" fill="rgb(247,195,46)" rx="2" ry="2" />
+<text  x="1496.59" y="495.5" ></text>
+</g>
+<g >
+<title>UpdateUnitAuraCacheData Plater/Plater_Auras.lua:585:26 (371,200 Bytes, 0.91%)</title><rect x="962.7" y="469" width="14.3" height="15.0" fill="rgb(216,52,12)" rx="2" ry="2" />
+<text  x="965.68" y="479.5" ></text>
+</g>
+<g >
+<title>GetBlockDynamicHuffmanHeader DBM-Core/Libs/LibDeflate/LibDeflate.lua:1491:6 (35,232 Bytes, 0.09%)</title><rect x="91.4" y="405" width="1.4" height="15.0" fill="rgb(216,51,12)" rx="2" ry="2" />
+<text  x="94.41" y="415.5" ></text>
+</g>
+<g >
+<title>QuestieLib:GetColoredQuestName Questie/Modules/Libs/QuestieLib.lua:131:0 (177,592 Bytes, 0.43%)</title><rect x="978.2" y="453" width="6.8" height="15.0" fill="rgb(228,110,26)" rx="2" ry="2" />
+<text  x="981.16" y="463.5" ></text>
+</g>
+<g >
+<title>Units:CheckUnitStatus ShadowedUnitFrames/modules/units.lua:289:0 (15,883 Bytes, 0.04%)</title><rect x="1001.0" y="469" width="0.6" height="15.0" fill="rgb(250,207,49)" rx="2" ry="2" />
+<text  x="1004.00" y="479.5" ></text>
+</g>
+<g >
+<title>habilidade_misc:NovaTabela Details/classes/classe_others_habilidade.lua:24:1 (27,232 Bytes, 0.07%)</title><rect x="136.4" y="421" width="1.0" height="15.0" fill="rgb(211,28,6)" rx="2" ry="2" />
+<text  x="139.37" y="431.5" ></text>
+</g>
+<g >
+<title>_detalhes:FlagActorsOnBossFight Details/core/control.lua:1192:2 (17,920 Bytes, 0.04%)</title><rect x="172.6" y="437" width="0.7" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="175.64" y="447.5" ></text>
+</g>
+<g >
+<title>NWB:convertKeys NovaWorldBuffs/NWBData.lua:2237:0 (18,920 Bytes, 0.05%)</title><rect x="661.5" y="325" width="0.8" height="15.0" fill="rgb(243,179,42)" rx="2" ry="2" />
+<text  x="664.53" y="335.5" ></text>
+</g>
+<g >
+<title>NWB:convertKeys NovaWorldBuffs/NWBData.lua:2237:0 (23,224 Bytes, 0.06%)</title><rect x="661.4" y="341" width="0.9" height="15.0" fill="rgb(243,179,42)" rx="2" ry="2" />
+<text  x="664.36" y="351.5" ></text>
+</g>
+<g >
+<title>DecompressDynamicBlock DBM-Core/Libs/LibDeflate/LibDeflate.lua:2506:6 (73,888 Bytes, 0.18%)</title><rect x="654.7" y="341" width="2.9" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="657.73" y="351.5" ></text>
+</g>
+<g >
+<title>dataFunctionRefs.MP5Casting ExtendedCharacterStats/Modules/Data/Data.lua:190:21 (208,928 Bytes, 0.51%)</title><rect x="198.9" y="405" width="8.1" height="15.0" fill="rgb(232,126,30)" rx="2" ry="2" />
+<text  x="201.94" y="415.5" ></text>
+</g>
+<g >
+<title>(anonymous) Plater/libs/DF/icon.lua:132:17 (11,340 Bytes, 0.03%)</title><rect x="944.6" y="421" width="0.4" height="15.0" fill="rgb(220,73,17)" rx="2" ry="2" />
+<text  x="947.57" y="431.5" ></text>
+</g>
+<g >
+<title>LibSerialize:_ReadPair Auctionator/Libs/LibSerialize/LibSerialize.lua:760:0 (29,386 Bytes, 0.07%)</title><rect x="657.8" y="293" width="1.1" height="15.0" fill="rgb(252,218,52)" rx="2" ry="2" />
+<text  x="660.78" y="303.5" ></text>
+</g>
+<g >
+<title>(anonymous) Plater/libs/DF/icon.lua:254:11 (30,348 Bytes, 0.07%)</title><rect x="943.8" y="453" width="1.2" height="15.0" fill="rgb(227,102,24)" rx="2" ry="2" />
+<text  x="946.84" y="463.5" ></text>
+</g>
+<g >
+<title>Plater.UpdateAllPlates Plater/Plater.lua:5639:1 (4,496 Bytes, 0.01%)</title><rect x="718.4" y="453" width="0.2" height="15.0" fill="rgb(238,152,36)" rx="2" ry="2" />
+<text  x="721.39" y="463.5" ></text>
+</g>
+<g >
+<title>LibDeflate:DecompressDeflate DBM-Core/Libs/LibDeflate/LibDeflate.lua:2742:0 (78,609 Bytes, 0.19%)</title><rect x="654.6" y="389" width="3.0" height="15.0" fill="rgb(245,186,44)" rx="2" ry="2" />
+<text  x="657.55" y="399.5" ></text>
+</g>
+<g >
+<title>lib:GetTalentPoints TacoTip/Libs/LibClassicInspector/LibClassicInspector.lua:3453:0 (2,880 Bytes, 0.01%)</title><rect x="1493.4" y="453" width="0.1" height="15.0" fill="rgb(205,2,0)" rx="2" ry="2" />
+<text  x="1496.37" y="463.5" ></text>
+</g>
+<g >
+<title>QuestieQuest:CheckQuestSourceItem Questie/Modules/Quest/QuestieQuest.lua:881:0 (177,314 Bytes, 0.43%)</title><rect x="978.2" y="421" width="6.8" height="15.0" fill="rgb(224,88,21)" rx="2" ry="2" />
+<text  x="981.16" y="431.5" ></text>
+</g>
+<g >
+<title>NWB:config NovaWorldBuffs/Options.lua:3750:0 (3,440 Bytes, 0.01%)</title><rect x="674.1" y="341" width="0.2" height="15.0" fill="rgb(248,202,48)" rx="2" ry="2" />
+<text  x="677.15" y="351.5" ></text>
+</g>
+<g >
+<title>LibSerialize:Serialize Auctionator/Libs/LibSerialize/LibSerialize.lua:1297:0 (2,772 Bytes, 0.01%)</title><rect x="662.3" y="373" width="0.1" height="15.0" fill="rgb(233,132,31)" rx="2" ry="2" />
+<text  x="665.29" y="383.5" ></text>
+</g>
+<g >
+<title>PlaterCLEUParser.Parser Plater/Plater.lua:9299:27 (26,890 Bytes, 0.07%)</title><rect x="956.0" y="485" width="1.0" height="15.0" fill="rgb(243,179,42)" rx="2" ry="2" />
+<text  x="959.00" y="495.5" ></text>
+</g>
+<g >
+<title>_detalhes:AtualizaGumpPrincipal Details/core/control.lua:1582:2 (76,728 Bytes, 0.19%)</title><rect x="188.9" y="469" width="3.0" height="15.0" fill="rgb(237,147,35)" rx="2" ry="2" />
+<text  x="191.91" y="479.5" ></text>
+</g>
+<g >
+<title>(anonymous) Gargul/Classes/TradeTime.lua:63:25 (1,631,757 Bytes, 3.98%)</title><rect x="309.1" y="389" width="62.9" height="15.0" fill="rgb(229,112,26)" rx="2" ry="2" />
+<text  x="312.07" y="399.5" >(anony..</text>
+</g>
+<g >
+<title>(anonymous) TacoTip/Libs/LibClassicInspector/LibClassicInspector.lua:3071:23 (232,078 Bytes, 0.57%)</title><rect x="377.2" y="485" width="8.9" height="15.0" fill="rgb(237,151,36)" rx="2" ry="2" />
+<text  x="380.20" y="495.5" ></text>
+</g>
+<g >
+<title>(anonymous) Gargul/Classes/TradeTime.lua:47:49 (3,971,261 Bytes, 9.69%)</title><rect x="218.9" y="453" width="153.1" height="15.0" fill="rgb(227,104,25)" rx="2" ry="2" />
+<text  x="221.89" y="463.5" >(anonymous) Gargul/..</text>
+</g>
+<g >
+<title>container_combatentes:PegarCombatente Details/classes/container_combatentes.lua:483:1 (23,588 Bytes, 0.06%)</title><rect x="167.0" y="453" width="0.9" height="15.0" fill="rgb(223,86,20)" rx="2" ry="2" />
+<text  x="169.95" y="463.5" ></text>
+</g>
+<g >
+<title>(anonymous) Plater/libs/DF/icon.lua:180:11 (29,676 Bytes, 0.07%)</title><rect x="943.9" y="437" width="1.1" height="15.0" fill="rgb(240,162,38)" rx="2" ry="2" />
+<text  x="946.87" y="447.5" ></text>
+</g>
+<g >
+<title>GetAnchorFrame WeakAuras/WeakAuras.lua:5668:6 (285,228 Bytes, 0.70%)</title><rect x="1579.0" y="437" width="11.0" height="15.0" fill="rgb(220,71,17)" rx="2" ry="2" />
+<text  x="1582.00" y="447.5" ></text>
+</g>
+<g >
+<title>NotesDB:GetInfoForNameOrMain CharacterNotes/NotesDB.lua:181:0 (34,560 Bytes, 0.08%)</title><rect x="1066.4" y="437" width="1.4" height="15.0" fill="rgb(226,96,23)" rx="2" ry="2" />
+<text  x="1069.44" y="447.5" ></text>
+</g>
+<g >
+<title>(anonymous) Gargul/Classes/DroppedLootLedger.lua:65:8 (3,085 Bytes, 0.01%)</title><rect x="372.0" y="405" width="0.1" height="15.0" fill="rgb(245,186,44)" rx="2" ry="2" />
+<text  x="375.02" y="415.5" ></text>
+</g>
+<g >
+<title>Details (3,143,362 Bytes, 7.67%)</title><rect x="74.4" y="501" width="121.2" height="15.0" fill="rgb(227,101,24)" rx="2" ry="2" />
+<text  x="77.42" y="511.5" >Details</text>
+</g>
+<g >
+<title>Plater.AddAura Plater/Plater_Auras.lua:1492:1 (8,130 Bytes, 0.02%)</title><rect x="731.6" y="453" width="0.3" height="15.0" fill="rgb(235,140,33)" rx="2" ry="2" />
+<text  x="734.56" y="463.5" ></text>
+</g>
+<g >
+<title>FadeHandler.Fader Details/core/util.lua:510:0 (5,792 Bytes, 0.01%)</title><rect x="157.1" y="405" width="0.2" height="15.0" fill="rgb(207,13,3)" rx="2" ry="2" />
+<text  x="160.09" y="415.5" ></text>
+</g>
+<g >
+<title>GetHuffmanBitlenAndCode DBM-Core/Libs/LibDeflate/LibDeflate.lua:968:6 (32,872 Bytes, 0.08%)</title><rect x="78.1" y="373" width="1.3" height="15.0" fill="rgb(216,51,12)" rx="2" ry="2" />
+<text  x="81.12" y="383.5" ></text>
+</g>
+<g >
+<title>DeserializeValue Details/Libs/AceSerializer-3.0/AceSerializer-3.0.lua:172:6 (4,580 Bytes, 0.01%)</title><rect x="102.7" y="277" width="0.1" height="15.0" fill="rgb(216,54,12)" rx="2" ry="2" />
+<text  x="105.66" y="287.5" ></text>
+</g>
+<g >
+<title>Data:GetStatInfo ExtendedCharacterStats/Modules/Data/Data.lua:8:0 (428,797 Bytes, 1.05%)</title><rect x="198.9" y="421" width="16.5" height="15.0" fill="rgb(253,225,53)" rx="2" ry="2" />
+<text  x="201.92" y="431.5" ></text>
+</g>
+<g >
+<title>CharacterNotes:OnTooltipSetUnit CharacterNotes/CharacterNotes.lua:1370:0 (6,400 Bytes, 0.02%)</title><rect x="1011.7" y="357" width="0.3" height="15.0" fill="rgb(245,188,44)" rx="2" ry="2" />
+<text  x="1014.71" y="367.5" ></text>
+</g>
+<g >
+<title>NWB:convertKeys NovaWorldBuffs/NWBData.lua:2237:0 (18,896 Bytes, 0.05%)</title><rect x="671.1" y="373" width="0.7" height="15.0" fill="rgb(243,179,42)" rx="2" ry="2" />
+<text  x="674.06" y="383.5" ></text>
+</g>
+<g >
+<title>LibSerialize:_ReadTable Auctionator/Libs/LibSerialize/LibSerialize.lua:695:0 (3,296 Bytes, 0.01%)</title><rect x="658.0" y="117" width="0.1" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="661.01" y="127.5" ></text>
+</g>
+<g >
+<title>LibSerialize:Deserialize Auctionator/Libs/LibSerialize/LibSerialize.lua:1337:0 (30,610 Bytes, 0.07%)</title><rect x="657.7" y="373" width="1.2" height="15.0" fill="rgb(217,58,13)" rx="2" ry="2" />
+<text  x="660.73" y="383.5" ></text>
+</g>
+<g >
+<title>Plater.OnPlayerTargetChanged Plater/Plater.lua:6781:1 (10,896 Bytes, 0.03%)</title><rect x="718.6" y="453" width="0.4" height="15.0" fill="rgb(231,122,29)" rx="2" ry="2" />
+<text  x="721.56" y="463.5" ></text>
+</g>
+<g >
+<title>_detalhes:ColetarLixo Details/core/meta.lua:928:1 (6,464 Bytes, 0.02%)</title><rect x="193.7" y="437" width="0.2" height="15.0" fill="rgb(237,149,35)" rx="2" ry="2" />
+<text  x="196.67" y="447.5" ></text>
+</g>
+<g >
+<title>AceTimer:ScheduleTimer CharacterNotes/Libs/AceTimer-3.0/AceTimer-3.0.lua:94:0 (85,344 Bytes, 0.21%)</title><rect x="1570.1" y="389" width="3.3" height="15.0" fill="rgb(249,205,49)" rx="2" ry="2" />
+<text  x="1573.12" y="399.5" ></text>
+</g>
+<g >
+<title>NotesDB:GetRating CharacterNotes/NotesDB.lua:120:0 (117,120 Bytes, 0.29%)</title><rect x="32.4" y="437" width="4.6" height="15.0" fill="rgb(221,77,18)" rx="2" ry="2" />
+<text  x="35.44" y="447.5" ></text>
+</g>
+<g >
+<title>parser:add_buff_uptime Details/core/parser.lua:2532:1 (135,536 Bytes, 0.33%)</title><rect x="151.8" y="421" width="5.2" height="15.0" fill="rgb(229,111,26)" rx="2" ry="2" />
+<text  x="154.79" y="431.5" ></text>
+</g>
+<g >
+<title>GL:explode Gargul/Classes/Helpers.lua:625:0 (2,697 Bytes, 0.01%)</title><rect x="372.2" y="341" width="0.1" height="15.0" fill="rgb(210,27,6)" rx="2" ry="2" />
+<text  x="375.18" y="351.5" ></text>
+</g>
+<g >
+<title>tips.CheckEvents RXPGuides/Tips.lua:101:0 (5,875 Bytes, 0.01%)</title><rect x="1000.0" y="485" width="0.3" height="15.0" fill="rgb(244,182,43)" rx="2" ry="2" />
+<text  x="1003.03" y="495.5" ></text>
+</g>
+<g >
+<title>atributo_heal:r_connect_shadow Details/classes/classe_heal.lua:2530:2 (8,576 Bytes, 0.02%)</title><rect x="175.2" y="389" width="0.3" height="15.0" fill="rgb(210,25,6)" rx="2" ry="2" />
+<text  x="178.17" y="399.5" ></text>
+</g>
+<g >
+<title>Plater.UpdateLifePercentText Plater/Plater.lua:7332:1 (3,523 Bytes, 0.01%)</title><rect x="694.7" y="389" width="0.1" height="15.0" fill="rgb(233,129,30)" rx="2" ry="2" />
+<text  x="697.67" y="399.5" ></text>
+</g>
+<g >
+<title>DBT:UpdateBars DBM-StatusBarTimers/DBT.lua:647:0 (5,624 Bytes, 0.01%)</title><rect x="73.5" y="437" width="0.2" height="15.0" fill="rgb(245,188,45)" rx="2" ry="2" />
+<text  x="76.53" y="447.5" ></text>
+</g>
+<g >
+<title>Plater.OnUpdateHealth Plater/Plater.lua:5218:1 (68,947 Bytes, 0.17%)</title><rect x="691.7" y="453" width="2.7" height="15.0" fill="rgb(250,209,50)" rx="2" ry="2" />
+<text  x="694.72" y="463.5" ></text>
+</g>
+<g >
+<title>tagPool.? ShadowedUnitFrames/modules/tags.lua:219:17 (9,434 Bytes, 0.02%)</title><rect x="1001.2" y="421" width="0.4" height="15.0" fill="rgb(232,126,30)" rx="2" ry="2" />
+<text  x="1004.25" y="431.5" ></text>
+</g>
+<g >
+<title>RunTriggerFunc WeakAuras/GenericTrigger.lua:620:6 (61,261 Bytes, 0.15%)</title><rect x="1573.4" y="437" width="2.4" height="15.0" fill="rgb(245,186,44)" rx="2" ry="2" />
+<text  x="1576.41" y="447.5" ></text>
+</g>
+<g >
+<title>container_habilidades:PegaHabilidade Details/classes/container_habilidades.lua:62:1 (11,952 Bytes, 0.03%)</title><rect x="171.8" y="437" width="0.5" height="15.0" fill="rgb(248,201,48)" rx="2" ry="2" />
+<text  x="174.83" y="447.5" ></text>
+</g>
+<g >
+<title>new CharacterNotes/Libs/AceTimer-3.0/AceTimer-3.0.lua:32:6 (8,008 Bytes, 0.02%)</title><rect x="192.1" y="437" width="0.3" height="15.0" fill="rgb(247,194,46)" rx="2" ry="2" />
+<text  x="195.14" y="447.5" ></text>
+</g>
+<g >
+<title>_detalhes:IniciarColetaDeLixo Details/core/meta.lua:770:1 (81,703 Bytes, 0.20%)</title><rect x="192.1" y="469" width="3.2" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="195.14" y="479.5" ></text>
+</g>
+<g >
+<title>GetBlockLZ77Result DBM-Core/Libs/LibDeflate/LibDeflate.lua:1241:6 (149,608 Bytes, 0.37%)</title><rect x="179.1" y="373" width="5.8" height="15.0" fill="rgb(239,160,38)" rx="2" ry="2" />
+<text  x="182.14" y="383.5" ></text>
+</g>
+<g >
+<title>DecodeUntilEndOfBlock DBM-Core/Libs/LibDeflate/LibDeflate.lua:2353:6 (49,152 Bytes, 0.12%)</title><rect x="655.3" y="325" width="1.9" height="15.0" fill="rgb(225,94,22)" rx="2" ry="2" />
+<text  x="658.29" y="335.5" ></text>
+</g>
+<g >
+<title>NotesDB:ParseName CharacterNotes/NotesDB.lua:70:0 (29,440 Bytes, 0.07%)</title><rect x="21.0" y="405" width="1.1" height="15.0" fill="rgb(214,42,10)" rx="2" ry="2" />
+<text  x="24.00" y="415.5" ></text>
+</g>
+<g >
+<title>container_pets:Adicionar Details/classes/container_pets.lua:222:0 (4,320 Bytes, 0.01%)</title><rect x="169.4" y="453" width="0.2" height="15.0" fill="rgb(229,113,27)" rx="2" ry="2" />
+<text  x="172.42" y="463.5" ></text>
+</g>
+<g >
+<title>_detalhes:QuickDispatchEvent Details/functions/events.lua:241:1 (7,296 Bytes, 0.02%)</title><rect x="157.3" y="421" width="0.3" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="160.32" y="431.5" ></text>
+</g>
+<g >
+<title>FazColeta Details/core/meta.lua:858:7 (5,328 Bytes, 0.01%)</title><rect x="194.0" y="421" width="0.2" height="15.0" fill="rgb(244,181,43)" rx="2" ry="2" />
+<text  x="196.97" y="431.5" ></text>
+</g>
+<g >
+<title>Plater.AddToAuraUpdate Plater/Plater_Auras.lua:577:0 (23,120 Bytes, 0.06%)</title><rect x="945.3" y="421" width="0.9" height="15.0" fill="rgb(225,96,23)" rx="2" ry="2" />
+<text  x="948.29" y="431.5" ></text>
+</g>
+<g >
+<title>container_combatentes:PegarCombatente Details/classes/container_combatentes.lua:483:1 (2,672 Bytes, 0.01%)</title><rect x="174.6" y="373" width="0.1" height="15.0" fill="rgb(223,86,20)" rx="2" ry="2" />
+<text  x="177.60" y="383.5" ></text>
+</g>
+<g >
+<title>NWB:convertKeys NovaWorldBuffs/NWBData.lua:2237:0 (25,736 Bytes, 0.06%)</title><rect x="661.3" y="357" width="1.0" height="15.0" fill="rgb(243,179,42)" rx="2" ry="2" />
+<text  x="664.26" y="367.5" ></text>
+</g>
+<g >
+<title>GetBlockDynamicHuffmanHeader DBM-Core/Libs/LibDeflate/LibDeflate.lua:1491:6 (33,480 Bytes, 0.08%)</title><rect x="662.7" y="309" width="1.2" height="15.0" fill="rgb(216,51,12)" rx="2" ry="2" />
+<text  x="665.65" y="319.5" ></text>
+</g>
+<g >
+<title>module:UNIT_SPELLCAST_SUCCEEDED DBM-Core/modules/DevTools.lua:23:1 (6,961 Bytes, 0.02%)</title><rect x="42.2" y="469" width="0.3" height="15.0" fill="rgb(253,222,53)" rx="2" ry="2" />
+<text  x="45.23" y="479.5" ></text>
+</g>
+<g >
+<title>TacoTip (12,703,572 Bytes, 30.99%)</title><rect x="1003.8" y="501" width="489.7" height="15.0" fill="rgb(243,176,42)" rx="2" ry="2" />
+<text  x="1006.76" y="511.5" >TacoTip</text>
+</g>
+<g >
+<title>(anonymous) Gargul/Classes/Helpers.lua:1221:49 (3,971,639 Bytes, 9.69%)</title><rect x="218.9" y="469" width="153.1" height="15.0" fill="rgb(251,211,50)" rx="2" ry="2" />
+<text  x="221.87" y="479.5" >(anonymous) Gargul/..</text>
+</g>
+<g >
+<title>container_combatentes:PegarCombatente Details/classes/container_combatentes.lua:483:1 (15,863 Bytes, 0.04%)</title><rect x="170.3" y="437" width="0.6" height="15.0" fill="rgb(223,86,20)" rx="2" ry="2" />
+<text  x="173.34" y="447.5" ></text>
+</g>
+<g >
+<title>NotesDB:GetRating CharacterNotes/NotesDB.lua:120:0 (11,520 Bytes, 0.03%)</title><rect x="1067.3" y="421" width="0.5" height="15.0" fill="rgb(221,77,18)" rx="2" ry="2" />
+<text  x="1070.33" y="431.5" ></text>
+</g>
+<g >
+<title>NotesDB:FormatUnitName CharacterNotes/NotesDB.lua:81:0 (5,760 Bytes, 0.01%)</title><rect x="1067.3" y="405" width="0.3" height="15.0" fill="rgb(253,222,53)" rx="2" ry="2" />
+<text  x="1070.33" y="415.5" ></text>
+</g>
+<g >
+<title>CompressDynamicHuffmanBlock DBM-Core/Libs/LibDeflate/LibDeflate.lua:1571:6 (7,068 Bytes, 0.02%)</title><rect x="177.5" y="373" width="0.3" height="15.0" fill="rgb(210,23,5)" rx="2" ry="2" />
+<text  x="180.51" y="383.5" ></text>
+</g>
+<g >
+<title>AceSerializer:Serialize Details/Libs/AceSerializer-3.0/AceSerializer-3.0.lua:122:0 (7,012 Bytes, 0.02%)</title><rect x="177.2" y="421" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="180.19" y="431.5" ></text>
+</g>
+<g >
+<title>renderAura ShadowedUnitFrames/modules/auras.lua:539:6 (5,931 Bytes, 0.01%)</title><rect x="1000.5" y="437" width="0.3" height="15.0" fill="rgb(239,160,38)" rx="2" ry="2" />
+<text  x="1003.54" y="447.5" ></text>
+</g>
+<g >
+<title>DroppedLootLedger:startOrStopTracking Gargul/Classes/DroppedLootLedger.lua:74:0 (3,085 Bytes, 0.01%)</title><rect x="372.0" y="389" width="0.1" height="15.0" fill="rgb(237,150,36)" rx="2" ry="2" />
+<text  x="375.02" y="399.5" ></text>
+</g>
+<g >
+<title>container_habilidades:NovoContainer Details/classes/container_habilidades.lua:35:1 (5,888 Bytes, 0.01%)</title><rect x="161.0" y="421" width="0.2" height="15.0" fill="rgb(245,187,44)" rx="2" ry="2" />
+<text  x="163.98" y="431.5" ></text>
+</g>
+<g >
+<title>DBM:PlaySpecialWarningSound DBM-Core/DBM-Core.lua:10732:1 (21,492 Bytes, 0.05%)</title><rect x="44.6" y="405" width="0.9" height="15.0" fill="rgb(220,72,17)" rx="2" ry="2" />
+<text  x="47.64" y="415.5" ></text>
+</g>
+<g >
+<title>startStopTimers WeakAuras/WeakAuras.lua:4502:6 (121,216 Bytes, 0.30%)</title><rect x="1568.7" y="421" width="4.7" height="15.0" fill="rgb(251,212,50)" rx="2" ry="2" />
+<text  x="1571.73" y="431.5" ></text>
+</g>
+<g >
+<title>(anonymous) Gargul/Classes/Events.lua:165:14 (7,970 Bytes, 0.02%)</title><rect x="372.0" y="421" width="0.3" height="15.0" fill="rgb(231,120,28)" rx="2" ry="2" />
+<text  x="375.02" y="431.5" ></text>
+</g>
+<g >
+<title>barPrototype:Update DBM-StatusBarTimers/DBT.lua:804:0 (43,930 Bytes, 0.11%)</title><rect x="72.7" y="469" width="1.7" height="15.0" fill="rgb(229,110,26)" rx="2" ry="2" />
+<text  x="75.66" y="479.5" ></text>
+</g>
+<g >
+<title>onUpdate DBM-StatusBarTimers/DBT.lua:189:7 (43,930 Bytes, 0.11%)</title><rect x="72.7" y="485" width="1.7" height="15.0" fill="rgb(231,123,29)" rx="2" ry="2" />
+<text  x="75.66" y="495.5" ></text>
+</g>
+<g >
+<title>eventFunctions.NAME_PLATE_UNIT_REMOVED Plater/Plater.lua:3728:28 (7,200 Bytes, 0.02%)</title><rect x="718.1" y="469" width="0.2" height="15.0" fill="rgb(218,61,14)" rx="2" ry="2" />
+<text  x="721.06" y="479.5" ></text>
+</g>
+<g >
+<title>habilidade_misc:NovaTabela Details/classes/classe_others_habilidade.lua:24:1 (23,088 Bytes, 0.06%)</title><rect x="138.6" y="421" width="0.9" height="15.0" fill="rgb(211,28,6)" rx="2" ry="2" />
+<text  x="141.61" y="431.5" ></text>
+</g>
+<g >
+<title>updateBossHealth DBM-Core/DBM-InfoFrame.lua:396:6 (52,352 Bytes, 0.13%)</title><rect x="40.1" y="453" width="2.1" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="43.13" y="463.5" ></text>
+</g>
+<g >
+<title>Plater.ScheduleUpdateForNameplate Plater/Plater.lua:1338:1 (3,264 Bytes, 0.01%)</title><rect x="719.8" y="453" width="0.1" height="15.0" fill="rgb(246,191,45)" rx="2" ry="2" />
+<text  x="722.75" y="463.5" ></text>
+</g>
+<g >
+<title>(anonymous) AnnoyingPopupRemover/AnnoyingPopupRemover.lua:452:31 (2,674 Bytes, 0.01%)</title><rect x="10.6" y="485" width="0.1" height="15.0" fill="rgb(219,66,15)" rx="2" ry="2" />
+<text  x="13.58" y="495.5" ></text>
+</g>
+<g >
+<title>announcePrototype:Show DBM-Core/DBM-Core.lua:9119:1 (8,206 Bytes, 0.02%)</title><rect x="43.4" y="421" width="0.3" height="15.0" fill="rgb(220,70,16)" rx="2" ry="2" />
+<text  x="46.40" y="431.5" ></text>
+</g>
+<g >
+<title>UpdateMatchData WeakAuras/BuffTrigger2.lua:423:6 (23,232 Bytes, 0.06%)</title><rect x="1510.8" y="421" width="0.9" height="15.0" fill="rgb(252,216,51)" rx="2" ry="2" />
+<text  x="1513.79" y="431.5" ></text>
+</g>
+<g >
+<title>AceSerializer:Deserialize Details/Libs/AceSerializer-3.0/AceSerializer-3.0.lua:246:0 (106,135 Bytes, 0.26%)</title><rect x="102.9" y="341" width="4.1" height="15.0" fill="rgb(211,29,6)" rx="2" ry="2" />
+<text  x="105.90" y="351.5" ></text>
+</g>
+<g >
+<title>Plater.FormatNumber Plater/Plater.lua:1882:2 (31,602 Bytes, 0.08%)</title><rect x="693.2" y="405" width="1.2" height="15.0" fill="rgb(234,133,31)" rx="2" ry="2" />
+<text  x="696.16" y="415.5" ></text>
+</g>
+<g >
+<title>Plater.UpdatePlateSize Plater/Plater.lua:5681:1 (3,288 Bytes, 0.01%)</title><rect x="945.0" y="469" width="0.2" height="15.0" fill="rgb(210,26,6)" rx="2" ry="2" />
+<text  x="948.04" y="479.5" ></text>
+</g>
+<g >
+<title>Inflate DBM-Core/Libs/LibDeflate/LibDeflate.lua:2620:6 (76,449 Bytes, 0.19%)</title><rect x="654.6" y="357" width="3.0" height="15.0" fill="rgb(252,220,52)" rx="2" ry="2" />
+<text  x="657.64" y="367.5" ></text>
+</g>
+<g >
+<title>cacheUserInventory TacoTip/Libs/LibClassicInspector/LibClassicInspector.lua:2834:6 (36,176 Bytes, 0.09%)</title><rect x="384.7" y="453" width="1.4" height="15.0" fill="rgb(239,159,38)" rx="2" ry="2" />
+<text  x="387.68" y="463.5" ></text>
+</g>
+<g >
+<title>(anonymous) NovaWorldBuffs/NovaWorldBuffs.lua:869:18 (556,503 Bytes, 1.36%)</title><rect x="612.2" y="485" width="21.4" height="15.0" fill="rgb(206,6,1)" rx="2" ry="2" />
+<text  x="615.18" y="495.5" >(..</text>
+</g>
+<g >
+<title>NWB:debug NovaWorldBuffs/NovaWorldBuffs.lua:5033:0 (13,499 Bytes, 0.03%)</title><rect x="665.0" y="357" width="0.5" height="15.0" fill="rgb(212,32,7)" rx="2" ry="2" />
+<text  x="667.96" y="367.5" ></text>
+</g>
+<g >
+<title>_detalhes:LimparPets Details/classes/container_pets.lua:242:0 (14,408 Bytes, 0.04%)</title><rect x="192.5" y="453" width="0.5" height="15.0" fill="rgb(247,197,47)" rx="2" ry="2" />
+<text  x="195.47" y="463.5" ></text>
+</g>
+<g >
+<title>LibDeflate:CompressDeflate DBM-Core/Libs/LibDeflate/LibDeflate.lua:2039:0 (291,928 Bytes, 0.71%)</title><rect x="177.5" y="421" width="11.2" height="15.0" fill="rgb(250,208,49)" rx="2" ry="2" />
+<text  x="180.46" y="431.5" ></text>
+</g>
+<g >
+<title>NWB:explode NovaWorldBuffs/NovaWorldBuffs.lua:4815:0 (8,019 Bytes, 0.02%)</title><rect x="669.6" y="405" width="0.3" height="15.0" fill="rgb(205,0,0)" rx="2" ry="2" />
+<text  x="672.57" y="415.5" ></text>
+</g>
+<g >
+<title>Details:CompressData Details/core/gears.lua:2977:0 (300,216 Bytes, 0.73%)</title><rect x="77.5" y="453" width="11.6" height="15.0" fill="rgb(250,208,49)" rx="2" ry="2" />
+<text  x="80.50" y="463.5" ></text>
+</g>
+<g >
+<title>checkForPull DBM-Core/DBM-Core.lua:4998:7 (630,776 Bytes, 1.54%)</title><rect x="47.9" y="453" width="24.3" height="15.0" fill="rgb(234,134,32)" rx="2" ry="2" />
+<text  x="50.92" y="463.5" >c..</text>
+</g>
+<g >
+<title>buildLSMFileCache DBM-Core/DBM-Core.lua:6382:7 (20,552 Bytes, 0.05%)</title><rect x="44.7" y="357" width="0.8" height="15.0" fill="rgb(234,134,32)" rx="2" ry="2" />
+<text  x="47.67" y="367.5" ></text>
+</g>
+<g >
+<title>habilidade_cura:Add Details/classes/classe_heal_habilidade.lua:58:1 (6,048 Bytes, 0.01%)</title><rect x="148.0" y="453" width="0.2" height="15.0" fill="rgb(220,72,17)" rx="2" ry="2" />
+<text  x="151.01" y="463.5" ></text>
+</g>
+<g >
+<title>LibSerialize:_ReadPair Auctionator/Libs/LibSerialize/LibSerialize.lua:760:0 (5,655 Bytes, 0.01%)</title><rect x="658.7" y="101" width="0.2" height="15.0" fill="rgb(252,218,52)" rx="2" ry="2" />
+<text  x="661.68" y="111.5" ></text>
+</g>
+<g >
+<title>(anonymous) Auctionator/Libs/LibSerialize/LibSerialize.lua:830:45 (4,375 Bytes, 0.01%)</title><rect x="658.7" y="69" width="0.1" height="15.0" fill="rgb(207,11,2)" rx="2" ry="2" />
+<text  x="661.68" y="79.5" ></text>
+</g>
+<g >
+<title>startFadeINAnimation Details/core/util.lua:483:29 (5,792 Bytes, 0.01%)</title><rect x="157.1" y="373" width="0.2" height="15.0" fill="rgb(239,158,37)" rx="2" ry="2" />
+<text  x="160.09" y="383.5" ></text>
+</g>
+<g >
+<title>region:Expand WeakAuras/RegionTypes/RegionPrototype.lua:1022:4 (20,050 Bytes, 0.05%)</title><rect x="1567.4" y="389" width="0.8" height="15.0" fill="rgb(244,181,43)" rx="2" ry="2" />
+<text  x="1570.39" y="399.5" ></text>
+</g>
+<g >
+<title>scan ShadowedUnitFrames/modules/auras.lua:614:6 (6,075 Bytes, 0.01%)</title><rect x="1000.5" y="453" width="0.3" height="15.0" fill="rgb(232,124,29)" rx="2" ry="2" />
+<text  x="1003.53" y="463.5" ></text>
+</g>
+<g >
+<title>Data:GetMP5WhileCasting ExtendedCharacterStats/Modules/Data/MP5.lua:98:0 (208,928 Bytes, 0.51%)</title><rect x="198.9" y="389" width="8.1" height="15.0" fill="rgb(215,50,11)" rx="2" ry="2" />
+<text  x="201.94" y="399.5" ></text>
+</g>
+<g >
+<title>RunAnimation WeakAuras/Animations.lua:15:6 (41,280 Bytes, 0.10%)</title><rect x="1575.8" y="469" width="1.6" height="15.0" fill="rgb(226,98,23)" rx="2" ry="2" />
+<text  x="1578.77" y="479.5" ></text>
+</g>
+<g >
+<title>NotesDB:ParseName CharacterNotes/NotesDB.lua:70:0 (58,560 Bytes, 0.14%)</title><rect x="25.6" y="421" width="2.2" height="15.0" fill="rgb(214,42,10)" rx="2" ry="2" />
+<text  x="28.57" y="431.5" ></text>
+</g>
+<g >
+<title>GL:tooltipItemTradeTimeRemaining Gargul/Classes/Helpers.lua:1494:0 (13,005 Bytes, 0.03%)</title><rect x="371.5" y="357" width="0.5" height="15.0" fill="rgb(235,140,33)" rx="2" ry="2" />
+<text  x="374.48" y="367.5" ></text>
+</g>
+<g >
+<title>DBT:UpdateBars DBM-StatusBarTimers/DBT.lua:647:0 (4,440 Bytes, 0.01%)</title><rect x="45.6" y="389" width="0.1" height="15.0" fill="rgb(245,188,45)" rx="2" ry="2" />
+<text  x="48.56" y="399.5" ></text>
+</g>
+<g >
+<title>habilidade_misc:Add Details/classes/classe_others_habilidade.lua:53:1 (17,472 Bytes, 0.04%)</title><rect x="139.5" y="437" width="0.7" height="15.0" fill="rgb(225,92,22)" rx="2" ry="2" />
+<text  x="142.50" y="447.5" ></text>
+</g>
+<g >
+<title>Dispatch AdiBags/libs/CallbackHandler-1.0/CallbackHandler-1.0.lua:15:6 (389,581 Bytes, 0.95%)</title><rect x="985.0" y="453" width="15.0" height="15.0" fill="rgb(244,180,43)" rx="2" ry="2" />
+<text  x="988.01" y="463.5" ></text>
+</g>
+<g >
+<title>NWB:convertKeys NovaWorldBuffs/NWBData.lua:2237:0 (23,168 Bytes, 0.06%)</title><rect x="673.4" y="389" width="0.9" height="15.0" fill="rgb(243,179,42)" rx="2" ry="2" />
+<text  x="676.39" y="399.5" ></text>
+</g>
+<g >
+<title>LibClassicDurations (93,384 Bytes, 0.23%)</title><rect x="373.6" y="501" width="3.6" height="15.0" fill="rgb(244,180,43)" rx="2" ry="2" />
+<text  x="376.60" y="511.5" ></text>
+</g>
+<g >
+<title>timer.callback CharacterNotes/Libs/AceTimer-3.0/AceTimer-3.0.lua:50:18 (3,980,957 Bytes, 9.71%)</title><rect x="218.9" y="485" width="153.4" height="15.0" fill="rgb(229,114,27)" rx="2" ry="2" />
+<text  x="221.87" y="495.5" >timer.callback Char..</text>
+</g>
+<g >
+<title>Plater.UpdatePlateSize Plater/Plater.lua:5681:1 (18,632 Bytes, 0.05%)</title><rect x="955.2" y="405" width="0.7" height="15.0" fill="rgb(210,26,6)" rx="2" ry="2" />
+<text  x="958.16" y="415.5" ></text>
+</g>
+<g >
+<title>NWB:config NovaWorldBuffs/Options.lua:3750:0 (2,880 Bytes, 0.01%)</title><rect x="673.4" y="373" width="0.2" height="15.0" fill="rgb(248,202,48)" rx="2" ry="2" />
+<text  x="676.44" y="383.5" ></text>
+</g>
+<g >
+<title>regfunc AdiBags/libs/CallbackHandler-1.0/CallbackHandler-1.0.lua:109:14 (389,581 Bytes, 0.95%)</title><rect x="985.0" y="437" width="15.0" height="15.0" fill="rgb(206,8,2)" rx="2" ry="2" />
+<text  x="988.01" y="447.5" ></text>
+</g>
+<g >
+<title>parser:summon Details/core/parser.lua:1338:1 (4,320 Bytes, 0.01%)</title><rect x="169.4" y="469" width="0.2" height="15.0" fill="rgb(241,167,40)" rx="2" ry="2" />
+<text  x="172.42" y="479.5" ></text>
+</g>
+<g >
+<title>all (40,986,134 Bytes, 100%)</title><rect x="10.0" y="517" width="1580.0" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="13.00" y="527.5" ></text>
+</g>
+<g >
+<title>Details:ClassicSpecFromNetwork Details/core/gears.lua:2411:0 (852,274 Bytes, 2.08%)</title><rect x="102.8" y="373" width="32.9" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="105.84" y="383.5" >De..</text>
+</g>
+<g >
+<title>(anonymous) Plater/libs/DF/icon.lua:519:18 (15,120 Bytes, 0.04%)</title><rect x="732.5" y="421" width="0.6" height="15.0" fill="rgb(206,5,1)" rx="2" ry="2" />
+<text  x="735.47" y="431.5" ></text>
+</g>
+<g >
+<title>Plater.UpdatePlateFrame Plater/Plater.lua:7570:1 (249,849 Bytes, 0.61%)</title><rect x="946.2" y="421" width="9.7" height="15.0" fill="rgb(250,208,49)" rx="2" ry="2" />
+<text  x="949.25" y="431.5" ></text>
+</g>
+<g >
+<title>(anonymous) WeakAuras/WeakAuras.lua:4537:8 (24,438 Bytes, 0.06%)</title><rect x="1577.4" y="469" width="0.9" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="1580.40" y="479.5" ></text>
+</g>
+<g >
+<title>QuestieDB.IsComplete Questie/Database/QuestieDB.lua:880:0 (177,314 Bytes, 0.43%)</title><rect x="978.2" y="437" width="6.8" height="15.0" fill="rgb(246,192,45)" rx="2" ry="2" />
+<text  x="981.16" y="447.5" ></text>
+</g>
+<g >
+<title>LibSerialize:_ReadPair Auctionator/Libs/LibSerialize/LibSerialize.lua:760:0 (23,088 Bytes, 0.06%)</title><rect x="658.0" y="165" width="0.9" height="15.0" fill="rgb(252,218,52)" rx="2" ry="2" />
+<text  x="661.00" y="175.5" ></text>
+</g>
+<g >
+<title>NotesDB:GetAlternateName CharacterNotes/NotesDB.lua:101:0 (60,914 Bytes, 0.15%)</title><rect x="30.1" y="421" width="2.3" height="15.0" fill="rgb(206,6,1)" rx="2" ry="2" />
+<text  x="33.10" y="431.5" ></text>
+</g>
+<g >
+<title>atributo_heal:ColetarLixo Details/classes/classe_heal.lua:2679:0 (6,464 Bytes, 0.02%)</title><rect x="193.7" y="453" width="0.2" height="15.0" fill="rgb(215,47,11)" rx="2" ry="2" />
+<text  x="196.67" y="463.5" ></text>
+</g>
+<g >
+<title>module:Schedule DBM-Core/modules/Scheduler.lua:271:0 (580,088 Bytes, 1.42%)</title><rect x="49.9" y="421" width="22.3" height="15.0" fill="rgb(221,76,18)" rx="2" ry="2" />
+<text  x="52.87" y="431.5" >m..</text>
+</g>
+<g >
+<title>parser:heal Details/core/parser.lua:1540:1 (156,880 Bytes, 0.38%)</title><rect x="142.2" y="469" width="6.0" height="15.0" fill="rgb(209,21,5)" rx="2" ry="2" />
+<text  x="145.19" y="479.5" ></text>
+</g>
+<g >
+<title>NWB:OnCommReceived NovaWorldBuffs/NWBData.lua:46:0 (285,289 Bytes, 0.70%)</title><rect x="654.5" y="405" width="11.0" height="15.0" fill="rgb(226,100,24)" rx="2" ry="2" />
+<text  x="657.48" y="415.5" ></text>
+</g>
+<g >
+<title>parser:buff Details/core/parser.lua:1832:1 (115,904 Bytes, 0.28%)</title><rect x="135.7" y="469" width="4.5" height="15.0" fill="rgb(225,95,22)" rx="2" ry="2" />
+<text  x="138.70" y="479.5" ></text>
+</g>
+<g >
+<title>parser:missed Details/core/parser.lua:1216:1 (17,661 Bytes, 0.04%)</title><rect x="171.6" y="453" width="0.7" height="15.0" fill="rgb(241,168,40)" rx="2" ry="2" />
+<text  x="174.63" y="463.5" ></text>
+</g>
+<g >
+<title>CharacterNotes:OnTooltipSetUnit CharacterNotes/CharacterNotes.lua:1370:0 (34,560 Bytes, 0.08%)</title><rect x="1066.4" y="453" width="1.4" height="15.0" fill="rgb(245,188,44)" rx="2" ry="2" />
+<text  x="1069.44" y="463.5" ></text>
+</g>
+<g >
+<title>NWB:recordChronoData NovaWorldBuffs/NovaWorldBuffs.lua:3536:0 (5,391,960 Bytes, 13.16%)</title><rect x="386.7" y="469" width="207.9" height="15.0" fill="rgb(220,71,17)" rx="2" ry="2" />
+<text  x="389.70" y="479.5" >NWB:recordChronoData NovaWo..</text>
+</g>
+<g >
+<title>AceComm:OnReceiveMultipartLast AtlasLootClassic/Libs/AceComm-3.0/AceComm-3.0.lua:199:1 (285,289 Bytes, 0.70%)</title><rect x="654.5" y="469" width="11.0" height="15.0" fill="rgb(231,122,29)" rx="2" ry="2" />
+<text  x="657.48" y="479.5" ></text>
+</g>
+<g >
+<title>NotesDB:ParseName CharacterNotes/NotesDB.lua:70:0 (5,760 Bytes, 0.01%)</title><rect x="1067.3" y="389" width="0.3" height="15.0" fill="rgb(214,42,10)" rx="2" ry="2" />
+<text  x="1070.33" y="399.5" ></text>
+</g>
+<g >
+<title>OnEvent AtlasLootClassic/Libs/AceComm-3.0/AceComm-3.0.lua:242:6 (11,437 Bytes, 0.03%)</title><rect x="10.0" y="485" width="0.4" height="15.0" fill="rgb(235,142,34)" rx="2" ry="2" />
+<text  x="13.00" y="495.5" ></text>
+</g>
+<g >
+<title>uid AdiBags/libs/AceHook-3.0/AceHook-3.0.lua:87:8 (11,043,028 Bytes, 26.94%)</title><rect x="1067.8" y="485" width="425.7" height="15.0" fill="rgb(243,178,42)" rx="2" ry="2" />
+<text  x="1070.77" y="495.5" >uid AdiBags/libs/AceHook-3.0/AceHook-3.0.lua:87:8</text>
+</g>
+<g >
+<title>onUpdate DBM-Core/DBM-InfoFrame.lua:973:6 (129,360 Bytes, 0.32%)</title><rect x="37.2" y="469" width="5.0" height="15.0" fill="rgb(224,87,21)" rx="2" ry="2" />
+<text  x="40.24" y="479.5" ></text>
+</g>
+<g >
+<title>startFadeOUTAnimation Details/core/util.lua:497:30 (3,640 Bytes, 0.01%)</title><rect x="191.6" y="373" width="0.2" height="15.0" fill="rgb(232,125,30)" rx="2" ry="2" />
+<text  x="194.63" y="383.5" ></text>
+</g>
+<g >
+<title>QuestieDB.GetQuest Questie/Database/QuestieDB.lua:929:0 (8,738 Bytes, 0.02%)</title><rect x="984.7" y="405" width="0.3" height="15.0" fill="rgb(230,118,28)" rx="2" ry="2" />
+<text  x="987.66" y="415.5" ></text>
+</g>
+<g >
+<title>NotesDB:FormatNameWithRealm CharacterNotes/NotesDB.lua:43:0 (2,691 Bytes, 0.01%)</title><rect x="30.1" y="405" width="0.1" height="15.0" fill="rgb(231,122,29)" rx="2" ry="2" />
+<text  x="33.10" y="415.5" ></text>
+</g>
+<g >
+<title>ScanGroupUnit WeakAuras/BuffTrigger2.lua:2001:6 (23,232 Bytes, 0.06%)</title><rect x="1510.8" y="453" width="0.9" height="15.0" fill="rgb(212,35,8)" rx="2" ry="2" />
+<text  x="1513.79" y="463.5" ></text>
+</g>
+<g >
+<title>getUnitAuras Plater/Plater_Auras.lua:645:6 (5,467,875 Bytes, 13.34%)</title><rect x="733.1" y="453" width="210.7" height="15.0" fill="rgb(210,26,6)" rx="2" ry="2" />
+<text  x="736.06" y="463.5" >getUnitAuras Plater/Plater_..</text>
+</g>
+<g >
+<title>Private.ActivateAuraEnvironment WeakAuras/AuraEnvironment.lua:278:0 (39,840 Bytes, 0.10%)</title><rect x="1575.8" y="437" width="1.5" height="15.0" fill="rgb(233,129,31)" rx="2" ry="2" />
+<text  x="1578.77" y="447.5" ></text>
+</g>
+<g >
+<title>habilidade_energy:NovaTabela Details/classes/classe_energy_habilidade.lua:25:1 (9,472 Bytes, 0.02%)</title><rect x="141.8" y="437" width="0.3" height="15.0" fill="rgb(241,168,40)" rx="2" ry="2" />
+<text  x="144.78" y="447.5" ></text>
+</g>
+<g >
+<title>CharacterNotes:AddMessage CharacterNotes/CharacterNotes.lua:1470:0 (325,563 Bytes, 0.79%)</title><rect x="10.8" y="469" width="12.5" height="15.0" fill="rgb(219,65,15)" rx="2" ry="2" />
+<text  x="13.77" y="479.5" ></text>
+</g>
+<g >
+<title>container_habilidades:NovoContainer Details/classes/container_habilidades.lua:35:1 (4,416 Bytes, 0.01%)</title><rect x="141.1" y="421" width="0.2" height="15.0" fill="rgb(245,187,44)" rx="2" ry="2" />
+<text  x="144.09" y="431.5" ></text>
+</g>
+<g >
+<title>renderAura ShadowedUnitFrames/modules/auras.lua:539:6 (5,173 Bytes, 0.01%)</title><rect x="1001.0" y="405" width="0.2" height="15.0" fill="rgb(239,160,38)" rx="2" ry="2" />
+<text  x="1004.03" y="415.5" ></text>
+</g>
+<g >
+<title>container_combatentes:PegarCombatente Details/classes/container_combatentes.lua:483:1 (31,344 Bytes, 0.08%)</title><rect x="140.5" y="453" width="1.2" height="15.0" fill="rgb(223,86,20)" rx="2" ry="2" />
+<text  x="143.53" y="463.5" ></text>
+</g>
+<g >
+<title>DBM:EndCombat DBM-Core/DBM-Core.lua:5775:1 (5,628 Bytes, 0.01%)</title><rect x="46.1" y="453" width="0.2" height="15.0" fill="rgb(226,100,23)" rx="2" ry="2" />
+<text  x="49.13" y="463.5" ></text>
+</g>
+<g >
+<title>announcePrototype:Show DBM-Core/DBM-Core.lua:9119:1 (4,434 Bytes, 0.01%)</title><rect x="45.9" y="421" width="0.2" height="15.0" fill="rgb(220,70,16)" rx="2" ry="2" />
+<text  x="48.91" y="431.5" ></text>
+</g>
+<g >
+<title>FadeHandler.Fader Details/core/util.lua:510:0 (3,640 Bytes, 0.01%)</title><rect x="191.6" y="389" width="0.2" height="15.0" fill="rgb(207,13,3)" rx="2" ry="2" />
+<text  x="194.63" y="399.5" ></text>
+</g>
+<g >
+<title>tips:GetHighlight RXPGuides/Tips.lua:250:0 (3,642 Bytes, 0.01%)</title><rect x="1000.1" y="437" width="0.2" height="15.0" fill="rgb(232,126,30)" rx="2" ry="2" />
+<text  x="1003.12" y="447.5" ></text>
+</g>
+<g >
+<title>parser_functions:ENCOUNTER_END Details/core/parser.lua:4262:1 (90,873 Bytes, 0.22%)</title><rect x="172.6" y="469" width="3.5" height="15.0" fill="rgb(239,158,37)" rx="2" ry="2" />
+<text  x="175.57" y="479.5" ></text>
+</g>
+<g >
+<title>LibSerialize:_ReadTable Auctionator/Libs/LibSerialize/LibSerialize.lua:695:0 (13,872 Bytes, 0.03%)</title><rect x="660.6" y="117" width="0.5" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="663.57" y="127.5" ></text>
+</g>
+<g >
+<title>NotesDB:GetAlternateName CharacterNotes/NotesDB.lua:101:0 (58,560 Bytes, 0.14%)</title><rect x="34.7" y="421" width="2.3" height="15.0" fill="rgb(206,6,1)" rx="2" ry="2" />
+<text  x="37.70" y="431.5" ></text>
+</g>
+<g >
+<title>atributo_misc:CreateBuffTargetObject Details/classes/classe_others.lua:188:0 (4,680 Bytes, 0.01%)</title><rect x="175.6" y="373" width="0.1" height="15.0" fill="rgb(214,42,10)" rx="2" ry="2" />
+<text  x="178.57" y="383.5" ></text>
+</g>
+<g >
+<title>QuestieTooltips:GetTooltip Questie/Modules/Tooltips/Tooltip.lua:204:0 (23,328 Bytes, 0.06%)</title><rect x="977.1" y="453" width="0.9" height="15.0" fill="rgb(249,202,48)" rx="2" ry="2" />
+<text  x="980.11" y="463.5" ></text>
+</g>
+<g >
+<title>LoadStringToTable DBM-Core/Libs/LibDeflate/LibDeflate.lua:1184:6 (98,304 Bytes, 0.24%)</title><rect x="98.5" y="405" width="3.8" height="15.0" fill="rgb(225,93,22)" rx="2" ry="2" />
+<text  x="101.54" y="415.5" ></text>
+</g>
+<g >
+<title>parser:unbuff Details/core/parser.lua:2207:1 (6,712 Bytes, 0.02%)</title><rect x="172.3" y="469" width="0.3" height="15.0" fill="rgb(228,109,26)" rx="2" ry="2" />
+<text  x="175.31" y="479.5" ></text>
+</g>
+<g >
+<title>GetHuffmanForDecode DBM-Core/Libs/LibDeflate/LibDeflate.lua:2303:6 (27,672 Bytes, 0.07%)</title><rect x="134.6" y="277" width="1.1" height="15.0" fill="rgb(240,161,38)" rx="2" ry="2" />
+<text  x="137.62" y="287.5" ></text>
+</g>
+<g >
+<title>checkWipe DBM-Core/DBM-Core.lua:5314:0 (6,017 Bytes, 0.01%)</title><rect x="72.4" y="469" width="0.2" height="15.0" fill="rgb(246,191,45)" rx="2" ry="2" />
+<text  x="75.36" y="479.5" ></text>
+</g>
+<g >
+<title>DBT:CreateBar DBM-StatusBarTimers/DBT.lua:277:1 (3,692 Bytes, 0.01%)</title><rect x="47.3" y="405" width="0.2" height="15.0" fill="rgb(235,141,33)" rx="2" ry="2" />
+<text  x="50.33" y="415.5" ></text>
+</g>
+<g >
+<title>ApplyStatesToRegions WeakAuras/WeakAuras.lua:4615:6 (45,666 Bytes, 0.11%)</title><rect x="1567.0" y="421" width="1.7" height="15.0" fill="rgb(247,194,46)" rx="2" ry="2" />
+<text  x="1569.97" y="431.5" ></text>
+</g>
+<g >
+<title>NWB:setCurrentLayerText NovaWorldBuffs/NovaWorldBuffs.lua:11893:0 (388,182 Bytes, 0.95%)</title><rect x="596.5" y="469" width="15.0" height="15.0" fill="rgb(207,10,2)" rx="2" ry="2" />
+<text  x="599.51" y="479.5" ></text>
+</g>
+<g >
+<title>Private.RunConditions WeakAuras/Conditions.lua:838:0 (14,160 Bytes, 0.03%)</title><rect x="1568.2" y="405" width="0.5" height="15.0" fill="rgb(218,62,14)" rx="2" ry="2" />
+<text  x="1571.19" y="415.5" ></text>
+</g>
+<g >
+<title>NWB:checkGuildMasterSetting NovaWorldBuffs/NovaWorldBuffs.lua:1152:0 (6,487 Bytes, 0.02%)</title><rect x="611.5" y="469" width="0.3" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="614.52" y="479.5" ></text>
+</g>
+<g >
+<title>mod:SPELL_CAST_START DBM-Raids-Vanilla/VanillaSoD_Gnomeregan/MechanicalMenagerie.lua:106:0 (65,149 Bytes, 0.16%)</title><rect x="43.4" y="437" width="2.5" height="15.0" fill="rgb(228,107,25)" rx="2" ry="2" />
+<text  x="46.40" y="447.5" ></text>
+</g>
+<g >
+<title>regfunc AdiBags/libs/CallbackHandler-1.0/CallbackHandler-1.0.lua:109:14 (285,289 Bytes, 0.70%)</title><rect x="654.5" y="421" width="11.0" height="15.0" fill="rgb(206,8,2)" rx="2" ry="2" />
+<text  x="657.48" y="431.5" ></text>
+</g>
+<g >
+<title>atributo_damage:NovaTabela Details/classes/classe_damage.lua:351:1 (10,368 Bytes, 0.03%)</title><rect x="167.1" y="437" width="0.4" height="15.0" fill="rgb(205,2,0)" rx="2" ry="2" />
+<text  x="170.12" y="447.5" ></text>
+</g>
+<g >
+<title>Dispatch AdiBags/libs/CallbackHandler-1.0/CallbackHandler-1.0.lua:15:6 (212,560 Bytes, 0.52%)</title><rect x="1003.8" y="421" width="8.2" height="15.0" fill="rgb(244,180,43)" rx="2" ry="2" />
+<text  x="1006.76" y="431.5" ></text>
+</g>
+<g >
+<title>NotesDB:ParseName CharacterNotes/NotesDB.lua:70:0 (5,760 Bytes, 0.01%)</title><rect x="1066.7" y="405" width="0.2" height="15.0" fill="rgb(214,42,10)" rx="2" ry="2" />
+<text  x="1069.66" y="415.5" ></text>
+</g>
+<g >
+<title>NWB:sendSettings NovaWorldBuffs/NWBData.lua:401:0 (82,776 Bytes, 0.20%)</title><rect x="662.3" y="389" width="3.2" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="665.28" y="399.5" ></text>
+</g>
+<g >
+<title>FadeHandler.Fader Details/core/util.lua:510:0 (5,440 Bytes, 0.01%)</title><rect x="176.2" y="421" width="0.2" height="15.0" fill="rgb(207,13,3)" rx="2" ry="2" />
+<text  x="179.16" y="431.5" ></text>
+</g>
+<g >
+<title>LibSerialize:_ReadObject Auctionator/Libs/LibSerialize/LibSerialize.lua:655:0 (16,912 Bytes, 0.04%)</title><rect x="672.1" y="357" width="0.7" height="15.0" fill="rgb(221,77,18)" rx="2" ry="2" />
+<text  x="675.11" y="367.5" ></text>
+</g>
+<g >
+<title>NotesDB:ParseName CharacterNotes/NotesDB.lua:70:0 (5,760 Bytes, 0.01%)</title><rect x="1066.4" y="405" width="0.3" height="15.0" fill="rgb(214,42,10)" rx="2" ry="2" />
+<text  x="1069.44" y="415.5" ></text>
+</g>
+<g >
+<title>LibDeflate:DecompressDeflate DBM-Core/Libs/LibDeflate/LibDeflate.lua:2742:0 (90,745 Bytes, 0.22%)</title><rect x="665.5" y="405" width="3.5" height="15.0" fill="rgb(245,186,44)" rx="2" ry="2" />
+<text  x="668.50" y="415.5" ></text>
+</g>
+<g >
+<title>NWB:config NovaWorldBuffs/Options.lua:3750:0 (3,456 Bytes, 0.01%)</title><rect x="674.0" y="357" width="0.1" height="15.0" fill="rgb(248,202,48)" rx="2" ry="2" />
+<text  x="676.97" y="367.5" ></text>
+</g>
+<g >
+<title>_detalhes:SairDoCombate Details/core/control.lua:519:2 (90,233 Bytes, 0.22%)</title><rect x="172.6" y="453" width="3.5" height="15.0" fill="rgb(246,190,45)" rx="2" ry="2" />
+<text  x="175.59" y="463.5" ></text>
+</g>
+<g >
+<title>container_habilidades:PegaHabilidade Details/classes/container_habilidades.lua:62:1 (63,072 Bytes, 0.15%)</title><rect x="152.9" y="405" width="2.5" height="15.0" fill="rgb(248,201,48)" rx="2" ry="2" />
+<text  x="155.94" y="415.5" ></text>
+</g>
+<g >
+<title>atributo_misc:NovaTabela Details/classes/classe_others.lua:176:0 (4,048 Bytes, 0.01%)</title><rect x="167.5" y="437" width="0.2" height="15.0" fill="rgb(237,148,35)" rx="2" ry="2" />
+<text  x="170.52" y="447.5" ></text>
+</g>
+<g >
+<title>NWB:throddleEventByFunc NovaWorldBuffs/NWBData.lua:2871:0 (6,480 Bytes, 0.02%)</title><rect x="611.9" y="469" width="0.2" height="15.0" fill="rgb(243,179,42)" rx="2" ry="2" />
+<text  x="614.89" y="479.5" ></text>
+</g>
+<g >
+<title>AceSerializer:Serialize Details/Libs/AceSerializer-3.0/AceSerializer-3.0.lua:122:0 (7,688 Bytes, 0.02%)</title><rect x="77.5" y="437" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="80.50" y="447.5" ></text>
+</g>
+<g >
+<title>CreateReader Auctionator/Libs/LibSerialize/LibSerialize.lua:490:6 (5,616 Bytes, 0.01%)</title><rect x="669.0" y="373" width="0.3" height="15.0" fill="rgb(219,68,16)" rx="2" ry="2" />
+<text  x="672.04" y="383.5" ></text>
+</g>
+<g >
+<title>Events:listen Gargul/Classes/Events.lua:161:0 (8,706 Bytes, 0.02%)</title><rect x="372.0" y="437" width="0.3" height="15.0" fill="rgb(219,68,16)" rx="2" ry="2" />
+<text  x="374.99" y="447.5" ></text>
+</g>
+<g >
+<title>NWB:OnCommReceived NovaWorldBuffs/NWBData.lua:46:0 (229,521 Bytes, 0.56%)</title><rect x="665.5" y="421" width="8.8" height="15.0" fill="rgb(226,100,24)" rx="2" ry="2" />
+<text  x="668.48" y="431.5" ></text>
+</g>
+<g >
+<title>_detalhes:ColetarLixo Details/core/meta.lua:928:1 (35,328 Bytes, 0.09%)</title><rect x="193.9" y="437" width="1.4" height="15.0" fill="rgb(237,149,35)" rx="2" ry="2" />
+<text  x="196.92" y="447.5" ></text>
+</g>
+<g >
+<title>LibSerialize:Deserialize Auctionator/Libs/LibSerialize/LibSerialize.lua:1337:0 (26,512 Bytes, 0.06%)</title><rect x="671.8" y="389" width="1.0" height="15.0" fill="rgb(217,58,13)" rx="2" ry="2" />
+<text  x="674.79" y="399.5" ></text>
+</g>
+<g >
+<title>specialWarningPrototype:Show DBM-Core/DBM-Core.lua:10019:1 (43,424 Bytes, 0.11%)</title><rect x="43.8" y="421" width="1.7" height="15.0" fill="rgb(240,164,39)" rx="2" ry="2" />
+<text  x="46.80" y="431.5" ></text>
+</g>
+<g >
+<title>container_combatentes:PegarCombatente Details/classes/container_combatentes.lua:483:1 (43,600 Bytes, 0.11%)</title><rect x="159.5" y="453" width="1.7" height="15.0" fill="rgb(223,86,20)" rx="2" ry="2" />
+<text  x="162.53" y="463.5" ></text>
+</g>
+<g >
+<title>_detalhes:SendRaidData Details/core/network.lua:702:1 (4,519 Bytes, 0.01%)</title><rect x="102.4" y="469" width="0.1" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="105.37" y="479.5" ></text>
+</g>
+<g >
+<title>(anonymous) Gargul/Classes/Helpers.lua:1162:13 (3,556,493 Bytes, 8.68%)</title><rect x="234.9" y="405" width="137.1" height="15.0" fill="rgb(233,130,31)" rx="2" ry="2" />
+<text  x="237.88" y="415.5" >(anonymous) Gargu..</text>
+</g>
+<g >
+<title>DBM:RegisterEvents DBM-Core/DBM-Core.lua:1322:1 (8,195 Bytes, 0.02%)</title><rect x="46.6" y="437" width="0.4" height="15.0" fill="rgb(225,93,22)" rx="2" ry="2" />
+<text  x="49.65" y="447.5" ></text>
+</g>
+<g >
+<title>table.copy Plater/libs/DF/fw.lua:740:0 (253,541 Bytes, 0.62%)</title><rect x="681.9" y="373" width="9.8" height="15.0" fill="rgb(239,159,38)" rx="2" ry="2" />
+<text  x="684.94" y="383.5" ></text>
+</g>
+<g >
+<title>scan ShadowedUnitFrames/modules/auras.lua:614:6 (6,029 Bytes, 0.01%)</title><rect x="1001.0" y="421" width="0.2" height="15.0" fill="rgb(232,124,29)" rx="2" ry="2" />
+<text  x="1004.00" y="431.5" ></text>
+</g>
+<g >
+<title>OnEvent ShadowedUnitFrames/modules/units.lua:191:6 (82,722 Bytes, 0.20%)</title><rect x="1000.5" y="485" width="3.2" height="15.0" fill="rgb(211,31,7)" rx="2" ry="2" />
+<text  x="1003.53" y="495.5" ></text>
+</g>
+<g >
+<title>onUpdate DBM-Core/modules/Scheduler.lua:162:6 (10,814 Bytes, 0.03%)</title><rect x="72.2" y="485" width="0.5" height="15.0" fill="rgb(214,43,10)" rx="2" ry="2" />
+<text  x="75.25" y="495.5" ></text>
+</g>
+<g >
+<title>LibSerialize:_ReadPair Auctionator/Libs/LibSerialize/LibSerialize.lua:760:0 (22,496 Bytes, 0.05%)</title><rect x="660.2" y="293" width="0.9" height="15.0" fill="rgb(252,218,52)" rx="2" ry="2" />
+<text  x="663.24" y="303.5" ></text>
+</g>
+<g >
+<title>TT_GS:GetScore TacoTip/gearscore.lua:236:0 (202,848 Bytes, 0.49%)</title><rect x="1003.9" y="341" width="7.8" height="15.0" fill="rgb(215,47,11)" rx="2" ry="2" />
+<text  x="1006.89" y="351.5" ></text>
+</g>
+<g >
+<title>parser:spellcast Details/core/parser.lua:3077:1 (79,084 Bytes, 0.19%)</title><rect x="166.4" y="469" width="3.0" height="15.0" fill="rgb(240,163,39)" rx="2" ry="2" />
+<text  x="169.37" y="479.5" ></text>
+</g>
+<g >
+<title>combate:TravarTempos Details/classes/classe_combate.lua:506:1 (5,376 Bytes, 0.01%)</title><rect x="173.6" y="437" width="0.2" height="15.0" fill="rgb(225,93,22)" rx="2" ry="2" />
+<text  x="176.60" y="447.5" ></text>
+</g>
+<g >
+<title>(anonymous) Details/Libs/LibClassicCasterino/LibClassicCasterino.lua:50:23 (32,782 Bytes, 0.08%)</title><rect x="372.3" y="485" width="1.3" height="15.0" fill="rgb(224,88,21)" rx="2" ry="2" />
+<text  x="375.34" y="495.5" ></text>
+</g>
+<g >
+<title>atributo_misc:CreateBuffTargetObject Details/classes/classe_others.lua:188:0 (5,200 Bytes, 0.01%)</title><rect x="135.8" y="437" width="0.2" height="15.0" fill="rgb(214,42,10)" rx="2" ry="2" />
+<text  x="138.79" y="447.5" ></text>
+</g>
+<g >
+<title>NWB:extractSettings NovaWorldBuffs/NWBData.lua:1379:0 (49,680 Bytes, 0.12%)</title><rect x="669.9" y="405" width="1.9" height="15.0" fill="rgb(220,73,17)" rx="2" ry="2" />
+<text  x="672.88" y="415.5" ></text>
+</g>
+<g >
+<title>Details:DecompressData Details/core/gears.lua:2999:0 (850,498 Bytes, 2.08%)</title><rect x="102.9" y="357" width="32.8" height="15.0" fill="rgb(225,96,23)" rx="2" ry="2" />
+<text  x="105.90" y="367.5" >De..</text>
+</g>
+<g >
+<title>Dispatch AdiBags/libs/CallbackHandler-1.0/CallbackHandler-1.0.lua:15:6 (859,925 Bytes, 2.10%)</title><rect x="102.5" y="437" width="33.2" height="15.0" fill="rgb(244,180,43)" rx="2" ry="2" />
+<text  x="105.54" y="447.5" >Di..</text>
+</g>
+<g >
+<title>Events:listen Gargul/Classes/Events.lua:161:0 (52,336 Bytes, 0.13%)</title><rect x="216.9" y="485" width="2.0" height="15.0" fill="rgb(219,68,16)" rx="2" ry="2" />
+<text  x="219.85" y="495.5" ></text>
+</g>
+<g >
+<title>Plater.RunScheduledUpdate Plater/Plater.lua:1279:1 (280,502 Bytes, 0.68%)</title><rect x="945.2" y="485" width="10.8" height="15.0" fill="rgb(221,73,17)" rx="2" ry="2" />
+<text  x="948.19" y="495.5" ></text>
+</g>
+<g >
+<title>LibSerialize:DeserializeValue Auctionator/Libs/LibSerialize/LibSerialize.lua:1301:0 (13,010 Bytes, 0.03%)</title><rect x="669.0" y="389" width="0.5" height="15.0" fill="rgb(237,150,35)" rx="2" ry="2" />
+<text  x="671.99" y="399.5" ></text>
+</g>
+<g >
+<title>infoFrame:Show DBM-Core/DBM-InfoFrame.lua:1124:0 (4,304 Bytes, 0.01%)</title><rect x="47.5" y="421" width="0.2" height="15.0" fill="rgb(243,176,42)" rx="2" ry="2" />
+<text  x="50.53" y="431.5" ></text>
+</g>
+<g >
+<title>DBM:ValidateSound DBM-Core/DBM-Core.lua:6397:1 (21,378 Bytes, 0.05%)</title><rect x="44.6" y="373" width="0.9" height="15.0" fill="rgb(237,149,35)" rx="2" ry="2" />
+<text  x="47.64" y="383.5" ></text>
+</g>
+<g >
+<title>Stats:UpdateInformation ExtendedCharacterStats/Modules/Stats.lua:324:0 (532,668 Bytes, 1.30%)</title><rect x="195.6" y="469" width="20.5" height="15.0" fill="rgb(250,208,49)" rx="2" ry="2" />
+<text  x="198.59" y="479.5" ></text>
+</g>
+<g >
+<title>read_actor_flag Details/classes/container_combatentes.lua:211:25 (8,064 Bytes, 0.02%)</title><rect x="152.4" y="389" width="0.3" height="15.0" fill="rgb(251,215,51)" rx="2" ry="2" />
+<text  x="155.38" y="399.5" ></text>
+</g>
+<g >
+<title>Auras:Update ShadowedUnitFrames/modules/auras.lua:675:0 (6,029 Bytes, 0.01%)</title><rect x="1001.0" y="437" width="0.2" height="15.0" fill="rgb(242,170,40)" rx="2" ry="2" />
+<text  x="1004.00" y="447.5" ></text>
+</g>
+<g >
+<title>postponeAnchor WeakAuras/WeakAuras.lua:5657:6 (285,013 Bytes, 0.70%)</title><rect x="1579.0" y="421" width="11.0" height="15.0" fill="rgb(229,112,26)" rx="2" ry="2" />
+<text  x="1582.01" y="431.5" ></text>
+</g>
+<g >
+<title>_detalhes:AdjustAlphaByContext Details/gumps/janela_principal.lua:7458:0 (5,440 Bytes, 0.01%)</title><rect x="176.2" y="453" width="0.2" height="15.0" fill="rgb(252,216,51)" rx="2" ry="2" />
+<text  x="179.16" y="463.5" ></text>
+</g>
+<g >
+<title>WeakAuras.ScanEvents WeakAuras/GenericTrigger.lua:789:0 (1,660,647 Bytes, 4.05%)</title><rect x="1511.8" y="469" width="64.0" height="15.0" fill="rgb(224,91,21)" rx="2" ry="2" />
+<text  x="1514.75" y="479.5" >WeakAur..</text>
+</g>
+<g >
+<title>Details:SendPlayerClassicInformation Details/core/gears.lua:2299:0 (317,568 Bytes, 0.77%)</title><rect x="176.7" y="453" width="12.2" height="15.0" fill="rgb(215,48,11)" rx="2" ry="2" />
+<text  x="179.67" y="463.5" ></text>
+</g>
+<g >
+<title>AceTimer:ScheduleTimer CharacterNotes/Libs/AceTimer-3.0/AceTimer-3.0.lua:94:0 (57,273 Bytes, 0.14%)</title><rect x="74.8" y="469" width="2.2" height="15.0" fill="rgb(249,205,49)" rx="2" ry="2" />
+<text  x="77.77" y="479.5" ></text>
+</g>
+<g >
+<title>NotesDB:GetInfoForNameOrMain CharacterNotes/NotesDB.lua:181:0 (359,122 Bytes, 0.88%)</title><rect x="23.3" y="453" width="13.9" height="15.0" fill="rgb(226,96,23)" rx="2" ry="2" />
+<text  x="26.32" y="463.5" ></text>
+</g>
+<g >
+<title>LibSerialize:_ReadObject Auctionator/Libs/LibSerialize/LibSerialize.lua:655:0 (20,240 Bytes, 0.05%)</title><rect x="660.3" y="213" width="0.8" height="15.0" fill="rgb(221,77,18)" rx="2" ry="2" />
+<text  x="663.32" y="223.5" ></text>
+</g>
+<g >
+<title>NotesDB:ParseName CharacterNotes/NotesDB.lua:70:0 (5,760 Bytes, 0.01%)</title><rect x="1067.6" y="389" width="0.2" height="15.0" fill="rgb(214,42,10)" rx="2" ry="2" />
+<text  x="1070.55" y="399.5" ></text>
+</g>
+<g >
+<title>DBM:AddMsg DBM-Core/DBM-Core.lua:7086:0 (4,225 Bytes, 0.01%)</title><rect x="43.5" y="405" width="0.2" height="15.0" fill="rgb(250,208,49)" rx="2" ry="2" />
+<text  x="46.53" y="415.5" ></text>
+</g>
+<g >
+<title>LoadStringToTable DBM-Core/Libs/LibDeflate/LibDeflate.lua:1184:6 (3,072 Bytes, 0.01%)</title><rect x="664.8" y="309" width="0.1" height="15.0" fill="rgb(225,93,22)" rx="2" ry="2" />
+<text  x="667.78" y="319.5" ></text>
+</g>
+<g >
+<title>WriteBits DBM-Core/Libs/LibDeflate/LibDeflate.lua:749:8 (7,068 Bytes, 0.02%)</title><rect x="177.5" y="357" width="0.3" height="15.0" fill="rgb(227,101,24)" rx="2" ry="2" />
+<text  x="180.51" y="367.5" ></text>
+</g>
+<g >
+<title>CompressDeflateInternal DBM-Core/Libs/LibDeflate/LibDeflate.lua:1960:6 (291,928 Bytes, 0.71%)</title><rect x="77.8" y="421" width="11.3" height="15.0" fill="rgb(247,193,46)" rx="2" ry="2" />
+<text  x="80.80" y="431.5" ></text>
+</g>
+<g >
+<title>GetBlockLZ77Result DBM-Core/Libs/LibDeflate/LibDeflate.lua:1241:6 (149,608 Bytes, 0.37%)</title><rect x="79.5" y="389" width="5.7" height="15.0" fill="rgb(239,160,38)" rx="2" ry="2" />
+<text  x="82.47" y="399.5" ></text>
+</g>
+<g >
+<title>_detalhes.OnParserEvent Details/core/parser.lua:4971:1 (956,288 Bytes, 2.33%)</title><rect x="135.7" y="485" width="36.9" height="15.0" fill="rgb(227,102,24)" rx="2" ry="2" />
+<text  x="138.70" y="495.5" >_de..</text>
+</g>
+<g >
+<title>DecodeUntilEndOfBlock DBM-Core/Libs/LibDeflate/LibDeflate.lua:2353:6 (33,024 Bytes, 0.08%)</title><rect x="667.7" y="341" width="1.3" height="15.0" fill="rgb(225,94,22)" rx="2" ry="2" />
+<text  x="670.72" y="351.5" ></text>
+</g>
+<g >
+<title>onEvent TacoTip/main.lua:713:6 (1,447,984 Bytes, 3.53%)</title><rect x="1012.0" y="485" width="55.8" height="15.0" fill="rgb(238,154,37)" rx="2" ry="2" />
+<text  x="1014.95" y="495.5" >onEve..</text>
+</g>
+<g >
+<title>DBM:PLAYER_REGEN_DISABLED DBM-Core/DBM-Core.lua:5015:1 (630,776 Bytes, 1.54%)</title><rect x="47.9" y="469" width="24.3" height="15.0" fill="rgb(217,58,14)" rx="2" ry="2" />
+<text  x="50.92" y="479.5" >D..</text>
+</g>
+<g >
+<title>DBM:CHAT_MSG_ADDON DBM-Core/DBM-Core.lua:4894:1 (3,736 Bytes, 0.01%)</title><rect x="42.5" y="469" width="0.2" height="15.0" fill="rgb(242,174,41)" rx="2" ry="2" />
+<text  x="45.54" y="479.5" ></text>
+</g>
+<g >
+<title>CharacterNotes:AddMessage CharacterNotes/CharacterNotes.lua:1470:0 (11,664 Bytes, 0.03%)</title><rect x="44.1" y="373" width="0.5" height="15.0" fill="rgb(219,65,15)" rx="2" ry="2" />
+<text  x="47.13" y="383.5" ></text>
+</g>
+<g >
+<title>container_combatentes:PegarCombatente Details/classes/container_combatentes.lua:483:1 (8,072 Bytes, 0.02%)</title><rect x="146.6" y="437" width="0.3" height="15.0" fill="rgb(223,86,20)" rx="2" ry="2" />
+<text  x="149.61" y="447.5" ></text>
+</g>
+<g >
+<title>NWB:config NovaWorldBuffs/Options.lua:3750:0 (3,440 Bytes, 0.01%)</title><rect x="671.7" y="341" width="0.1" height="15.0" fill="rgb(248,202,48)" rx="2" ry="2" />
+<text  x="674.66" y="351.5" ></text>
+</g>
+<g >
+<title>LibSerialize:_ReadObject Auctionator/Libs/LibSerialize/LibSerialize.lua:655:0 (23,088 Bytes, 0.06%)</title><rect x="658.0" y="149" width="0.9" height="15.0" fill="rgb(221,77,18)" rx="2" ry="2" />
+<text  x="661.00" y="159.5" ></text>
+</g>
+<g >
+<title>(anonymous) Auctionator/Libs/LibSerialize/LibSerialize.lua:776:43 (22,256 Bytes, 0.05%)</title><rect x="660.2" y="261" width="0.9" height="15.0" fill="rgb(212,33,8)" rx="2" ry="2" />
+<text  x="663.25" y="271.5" ></text>
+</g>
+<g >
+<title>(anonymous) ExtendedCharacterStats/Modules/EventHandler.lua:16:39 (532,668 Bytes, 1.30%)</title><rect x="195.6" y="485" width="20.5" height="15.0" fill="rgb(251,215,51)" rx="2" ry="2" />
+<text  x="198.59" y="495.5" ></text>
+</g>
+<g >
+<title>Tags:UpdatePowerType ShadowedUnitFrames/modules/tags.lua:93:0 (9,434 Bytes, 0.02%)</title><rect x="1001.2" y="437" width="0.4" height="15.0" fill="rgb(207,11,2)" rx="2" ry="2" />
+<text  x="1004.25" y="447.5" ></text>
+</g>
+<g >
+<title>parserFunctions.SPELL_AURA_APPLIED Plater/Plater.lua:9253:23 (4,680 Bytes, 0.01%)</title><rect x="956.1" y="469" width="0.2" height="15.0" fill="rgb(253,222,53)" rx="2" ry="2" />
+<text  x="959.09" y="479.5" ></text>
+</g>
+<g >
+<title>parserFunctions.SPELL_SUMMON Plater/Plater.lua:9119:17 (5,328 Bytes, 0.01%)</title><rect x="956.8" y="469" width="0.2" height="15.0" fill="rgb(216,52,12)" rx="2" ry="2" />
+<text  x="959.84" y="479.5" ></text>
+</g>
+<g >
+<title>NWB:config NovaWorldBuffs/Options.lua:3750:0 (2,872 Bytes, 0.01%)</title><rect x="659.1" y="325" width="0.1" height="15.0" fill="rgb(248,202,48)" rx="2" ry="2" />
+<text  x="662.09" y="335.5" ></text>
+</g>
+<g >
+<title>FullUpdate ShadowedUnitFrames/modules/units.lua:18:6 (7,131 Bytes, 0.02%)</title><rect x="1000.3" y="469" width="0.2" height="15.0" fill="rgb(225,96,22)" rx="2" ry="2" />
+<text  x="1003.26" y="479.5" ></text>
+</g>
+<g >
+<title>f:INSPECT_READY TacoTip/Libs/LibClassicInspector/LibClassicInspector.lua:2945:0 (36,176 Bytes, 0.09%)</title><rect x="384.7" y="469" width="1.4" height="15.0" fill="rgb(205,1,0)" rx="2" ry="2" />
+<text  x="387.68" y="479.5" ></text>
+</g>
+<g >
+<title>NWB.j NovaWorldBuffs/NovaWorldBuffs.lua:10558:0 (14,896 Bytes, 0.04%)</title><rect x="672.8" y="389" width="0.6" height="15.0" fill="rgb(245,187,44)" rx="2" ry="2" />
+<text  x="675.81" y="399.5" ></text>
+</g>
+<g >
+<title>_detalhes:OnCombatPhaseChanged Details/functions/link.lua:2584:1 (3,776 Bytes, 0.01%)</title><rect x="173.3" y="437" width="0.2" height="15.0" fill="rgb(238,153,36)" rx="2" ry="2" />
+<text  x="176.33" y="447.5" ></text>
+</g>
+<g >
+<title>ChatFilter.Filter Questie/Modules/QuestLinks/ChatFilter.lua:14:20 (180,020 Bytes, 0.44%)</title><rect x="978.1" y="485" width="6.9" height="15.0" fill="rgb(225,92,22)" rx="2" ry="2" />
+<text  x="981.08" y="495.5" ></text>
+</g>
+<g >
+<title>(anonymous) Plater/libs/DF/mixins.lua:363:21 (68,947 Bytes, 0.17%)</title><rect x="691.7" y="485" width="2.7" height="15.0" fill="rgb(220,71,17)" rx="2" ry="2" />
+<text  x="694.72" y="495.5" ></text>
+</g>
+<g >
+<title>Dispatch AdiBags/libs/CallbackHandler-1.0/CallbackHandler-1.0.lua:15:6 (229,521 Bytes, 0.56%)</title><rect x="665.5" y="453" width="8.8" height="15.0" fill="rgb(244,180,43)" rx="2" ry="2" />
+<text  x="668.48" y="463.5" ></text>
+</g>
+<g >
+<title>tips:CatalogInventory RXPGuides/Tips.lua:155:0 (35,820 Bytes, 0.09%)</title><rect x="998.7" y="405" width="1.3" height="15.0" fill="rgb(252,220,52)" rx="2" ry="2" />
+<text  x="1001.65" y="415.5" ></text>
+</g>
+<g >
+<title>FullUpdate ShadowedUnitFrames/modules/units.lua:18:6 (15,883 Bytes, 0.04%)</title><rect x="1001.0" y="453" width="0.6" height="15.0" fill="rgb(225,96,22)" rx="2" ry="2" />
+<text  x="1004.00" y="463.5" ></text>
+</g>
+<g >
+<title>getUnitAuras Plater/Plater_Auras.lua:645:6 (224,472 Bytes, 0.55%)</title><rect x="946.5" y="373" width="8.6" height="15.0" fill="rgb(210,26,6)" rx="2" ry="2" />
+<text  x="949.46" y="383.5" ></text>
+</g>
+<g >
+<title>NWB:convertKeys NovaWorldBuffs/NWBData.lua:2237:0 (26,208 Bytes, 0.06%)</title><rect x="661.2" y="373" width="1.1" height="15.0" fill="rgb(243,179,42)" rx="2" ry="2" />
+<text  x="664.25" y="383.5" ></text>
+</g>
+<g >
+<title>Plater.GetAllScriptsAsPrioSortedCopy Plater/Plater.lua:11060:1 (451,203 Bytes, 1.10%)</title><rect x="674.3" y="421" width="17.4" height="15.0" fill="rgb(237,149,35)" rx="2" ry="2" />
+<text  x="677.32" y="431.5" ></text>
+</g>
+<g >
+<title>Plater.CompileAllScripts Plater/Plater.lua:11136:1 (451,203 Bytes, 1.10%)</title><rect x="674.3" y="437" width="17.4" height="15.0" fill="rgb(219,68,16)" rx="2" ry="2" />
+<text  x="677.32" y="447.5" ></text>
+</g>
+<g >
+<title>schedule DBM-Core/modules/Scheduler.lua:225:6 (580,088 Bytes, 1.42%)</title><rect x="49.9" y="405" width="22.3" height="15.0" fill="rgb(230,117,28)" rx="2" ry="2" />
+<text  x="52.87" y="415.5" >s..</text>
+</g>
+<g >
+<title>_QuestieTooltips:AddUnitDataToTooltip Questie/Modules/Tooltips/TooltipHandler.lua:10:0 (25,947 Bytes, 0.06%)</title><rect x="977.0" y="469" width="1.0" height="15.0" fill="rgb(252,219,52)" rx="2" ry="2" />
+<text  x="980.01" y="479.5" ></text>
+</g>
+<g >
+<title>DBM-Core (920,969 Bytes, 2.25%)</title><rect x="37.2" y="501" width="35.5" height="15.0" fill="rgb(221,73,17)" rx="2" ry="2" />
+<text  x="40.16" y="511.5" >DBM..</text>
+</g>
+<g >
+<title>atributo_damage:ColetarLixo Details/classes/classe_damage.lua:5301:0 (10,215 Bytes, 0.02%)</title><rect x="193.0" y="453" width="0.4" height="15.0" fill="rgb(216,54,13)" rx="2" ry="2" />
+<text  x="196.03" y="463.5" ></text>
+</g>
+<g >
+<title>NotesDB:GetInfoForNameOrMain CharacterNotes/NotesDB.lua:181:0 (6,400 Bytes, 0.02%)</title><rect x="1011.7" y="341" width="0.3" height="15.0" fill="rgb(226,96,23)" rx="2" ry="2" />
+<text  x="1014.71" y="351.5" ></text>
+</g>
+<g >
+<title>tips:CheckEmergencyActions RXPGuides/Tips.lua:134:0 (5,875 Bytes, 0.01%)</title><rect x="1000.0" y="469" width="0.3" height="15.0" fill="rgb(245,188,44)" rx="2" ry="2" />
+<text  x="1003.03" y="479.5" ></text>
+</g>
+<g >
+<title>Plater.OnUpdateHealth Plater/Plater.lua:5218:1 (3,523 Bytes, 0.01%)</title><rect x="694.7" y="421" width="0.1" height="15.0" fill="rgb(250,209,50)" rx="2" ry="2" />
+<text  x="697.67" y="431.5" ></text>
+</g>
+<g >
+<title>Private.Animate WeakAuras/Animations.lua:190:0 (24,438 Bytes, 0.06%)</title><rect x="1577.4" y="421" width="0.9" height="15.0" fill="rgb(209,20,4)" rx="2" ry="2" />
+<text  x="1580.40" y="431.5" ></text>
+</g>
+<g >
+<title>DeserializeValue Details/Libs/AceSerializer-3.0/AceSerializer-3.0.lua:172:6 (4,580 Bytes, 0.01%)</title><rect x="102.7" y="293" width="0.1" height="15.0" fill="rgb(216,54,12)" rx="2" ry="2" />
+<text  x="105.66" y="303.5" ></text>
+</g>
+<g >
+<title>(anonymous) Auctionator/Libs/LibSerialize/LibSerialize.lua:776:43 (29,650 Bytes, 0.07%)</title><rect x="657.8" y="325" width="1.1" height="15.0" fill="rgb(212,33,8)" rx="2" ry="2" />
+<text  x="660.77" y="335.5" ></text>
+</g>
+<g >
+<title>(anonymous) Auctionator/Libs/LibSerialize/LibSerialize.lua:776:43 (26,920 Bytes, 0.07%)</title><rect x="657.9" y="197" width="1.0" height="15.0" fill="rgb(212,33,8)" rx="2" ry="2" />
+<text  x="660.86" y="207.5" ></text>
+</g>
+<g >
+<title>AceSerializer:Deserialize Details/Libs/AceSerializer-3.0/AceSerializer-3.0.lua:246:0 (7,651 Bytes, 0.02%)</title><rect x="102.5" y="389" width="0.3" height="15.0" fill="rgb(211,29,6)" rx="2" ry="2" />
+<text  x="105.54" y="399.5" ></text>
+</g>
+<g >
+<title>stringFromTimer DBM-StatusBarTimers/DBT.lua:794:6 (15,717 Bytes, 0.04%)</title><rect x="73.8" y="453" width="0.6" height="15.0" fill="rgb(243,176,42)" rx="2" ry="2" />
+<text  x="76.75" y="463.5" ></text>
+</g>
+<g >
+<title>DeserializeValue Details/Libs/AceSerializer-3.0/AceSerializer-3.0.lua:172:6 (4,580 Bytes, 0.01%)</title><rect x="102.7" y="309" width="0.1" height="15.0" fill="rgb(216,54,12)" rx="2" ry="2" />
+<text  x="105.66" y="319.5" ></text>
+</g>
+<g >
+<title>sendInfo TacoTip/Libs/LibClassicInspector/LibClassicInspector.lua:3090:6 (14,100 Bytes, 0.03%)</title><rect x="386.1" y="469" width="0.6" height="15.0" fill="rgb(214,44,10)" rx="2" ry="2" />
+<text  x="389.15" y="479.5" ></text>
+</g>
+<g >
+<title>_detalhes:SchedulePetUpdate Details/classes/container_pets.lua:263:0 (5,824 Bytes, 0.01%)</title><rect x="176.4" y="453" width="0.3" height="15.0" fill="rgb(232,126,30)" rx="2" ry="2" />
+<text  x="179.43" y="463.5" ></text>
+</g>
+<g >
+<title>f:CombatLogHandler Plater/libs/LibClassicDurations/core.lua:603:0 (93,048 Bytes, 0.23%)</title><rect x="373.6" y="453" width="3.6" height="15.0" fill="rgb(220,70,16)" rx="2" ry="2" />
+<text  x="376.60" y="463.5" ></text>
+</g>
+<g >
+<title>(anonymous) Auctionator/Libs/LibSerialize/LibSerialize.lua:776:43 (3,296 Bytes, 0.01%)</title><rect x="658.0" y="133" width="0.1" height="15.0" fill="rgb(212,33,8)" rx="2" ry="2" />
+<text  x="661.01" y="143.5" ></text>
+</g>
+<g >
+<title>SetTimer Plater/libs/LibClassicDurations/core.lua:395:6 (48,360 Bytes, 0.12%)</title><rect x="375.1" y="437" width="1.9" height="15.0" fill="rgb(232,127,30)" rx="2" ry="2" />
+<text  x="378.12" y="447.5" ></text>
+</g>
+<g >
+<title>_detalhes:EntrarEmCombate Details/core/control.lua:368:2 (183,933 Bytes, 0.45%)</title><rect x="151.7" y="453" width="7.1" height="15.0" fill="rgb(212,33,8)" rx="2" ry="2" />
+<text  x="154.72" y="463.5" ></text>
+</g>
+<g >
+<title>Plater.UpdateAuras_Automatic Plater/Plater_Auras.lua:2106:1 (225,256 Bytes, 0.55%)</title><rect x="946.4" y="389" width="8.7" height="15.0" fill="rgb(249,202,48)" rx="2" ry="2" />
+<text  x="949.43" y="399.5" ></text>
+</g>
+<g >
+<title>onEvent TacoTip/main.lua:713:6 (212,560 Bytes, 0.52%)</title><rect x="1003.8" y="389" width="8.2" height="15.0" fill="rgb(238,154,37)" rx="2" ry="2" />
+<text  x="1006.76" y="399.5" ></text>
+</g>
+<g >
+<title>Dispatch AdiBags/libs/CallbackHandler-1.0/CallbackHandler-1.0.lua:15:6 (285,289 Bytes, 0.70%)</title><rect x="654.5" y="437" width="11.0" height="15.0" fill="rgb(244,180,43)" rx="2" ry="2" />
+<text  x="657.48" y="447.5" ></text>
+</g>
+<g >
+<title>Plater.CheckLifePercentText Plater/Plater.lua:7378:1 (3,523 Bytes, 0.01%)</title><rect x="694.7" y="405" width="0.1" height="15.0" fill="rgb(227,104,24)" rx="2" ry="2" />
+<text  x="697.67" y="415.5" ></text>
+</g>
+<g >
+<title>FazColeta Details/core/meta.lua:858:7 (5,328 Bytes, 0.01%)</title><rect x="193.5" y="421" width="0.2" height="15.0" fill="rgb(244,181,43)" rx="2" ry="2" />
+<text  x="196.47" y="431.5" ></text>
+</g>
+<g >
+<title>(anonymous) NovaWorldBuffs/NovaWorldBuffs.lua:3953:23 (17,236 Bytes, 0.04%)</title><rect x="611.5" y="485" width="0.6" height="15.0" fill="rgb(241,167,40)" rx="2" ry="2" />
+<text  x="614.47" y="495.5" ></text>
+</g>
+<g >
+<title>ShadowedUnitFrames (90,800 Bytes, 0.22%)</title><rect x="1000.3" y="501" width="3.5" height="15.0" fill="rgb(246,191,45)" rx="2" ry="2" />
+<text  x="1003.26" y="511.5" ></text>
+</g>
+<g >
+<title>(anonymous) TacoTip/main.lua:798:54 (212,560 Bytes, 0.52%)</title><rect x="1003.8" y="405" width="8.2" height="15.0" fill="rgb(233,131,31)" rx="2" ry="2" />
+<text  x="1006.76" y="415.5" ></text>
+</g>
+<g >
+<title>container_combatentes:PegarCombatente Details/classes/container_combatentes.lua:483:1 (41,360 Bytes, 0.10%)</title><rect x="145.3" y="453" width="1.6" height="15.0" fill="rgb(223,86,20)" rx="2" ry="2" />
+<text  x="148.33" y="463.5" ></text>
+</g>
+<g >
+<title>registry:Fire AdiBags/libs/CallbackHandler-1.0/CallbackHandler-1.0.lua:49:1 (212,560 Bytes, 0.52%)</title><rect x="1003.8" y="437" width="8.2" height="15.0" fill="rgb(215,48,11)" rx="2" ry="2" />
+<text  x="1006.76" y="447.5" ></text>
+</g>
+<g >
+<title>uid AdiBags/libs/AceHook-3.0/AceHook-3.0.lua:100:8 (325,563 Bytes, 0.79%)</title><rect x="10.8" y="485" width="12.5" height="15.0" fill="rgb(224,88,21)" rx="2" ry="2" />
+<text  x="13.77" y="495.5" ></text>
+</g>
+<g >
+<title>NotesDB:GetAlternateName CharacterNotes/NotesDB.lua:101:0 (5,760 Bytes, 0.01%)</title><rect x="1067.1" y="405" width="0.2" height="15.0" fill="rgb(206,6,1)" rx="2" ry="2" />
+<text  x="1070.11" y="415.5" ></text>
+</g>
+<g >
+<title>habilidade_dano:NovaTabela Details/classes/classe_damage_habilidade.lua:26:1 (38,720 Bytes, 0.09%)</title><rect x="167.9" y="437" width="1.5" height="15.0" fill="rgb(211,30,7)" rx="2" ry="2" />
+<text  x="170.93" y="447.5" ></text>
+</g>
+<g >
+<title>NWB:ticker NovaWorldBuffs/NovaWorldBuffs.lua:654:0 (556,503 Bytes, 1.36%)</title><rect x="612.2" y="469" width="21.4" height="15.0" fill="rgb(251,214,51)" rx="2" ry="2" />
+<text  x="615.18" y="479.5" >N..</text>
+</g>
+<g >
+<title>getUnitAuras Plater/Plater_Auras.lua:645:6 (151,664 Bytes, 0.37%)</title><rect x="697.3" y="421" width="5.9" height="15.0" fill="rgb(210,26,6)" rx="2" ry="2" />
+<text  x="700.31" y="431.5" ></text>
+</g>
+<g >
+<title>LibSerialize:Deserialize Auctionator/Libs/LibSerialize/LibSerialize.lua:1337:0 (26,512 Bytes, 0.06%)</title><rect x="669.9" y="389" width="1.0" height="15.0" fill="rgb(217,58,13)" rx="2" ry="2" />
+<text  x="672.88" y="399.5" ></text>
+</g>
+<g >
+<title>CreateReader DBM-Core/Libs/LibDeflate/LibDeflate.lua:2127:6 (6,288 Bytes, 0.02%)</title><rect x="107.3" y="293" width="0.3" height="15.0" fill="rgb(213,38,9)" rx="2" ry="2" />
+<text  x="110.31" y="303.5" ></text>
+</g>
+<g >
+<title>Private.UpdatedTriggerState WeakAuras/WeakAuras.lua:4686:0 (24,438 Bytes, 0.06%)</title><rect x="1577.4" y="453" width="0.9" height="15.0" fill="rgb(240,162,38)" rx="2" ry="2" />
+<text  x="1580.40" y="463.5" ></text>
+</g>
+<g >
+<title>container_habilidades:NovoContainer Details/classes/container_habilidades.lua:35:1 (4,416 Bytes, 0.01%)</title><rect x="146.4" y="421" width="0.2" height="15.0" fill="rgb(245,187,44)" rx="2" ry="2" />
+<text  x="149.44" y="431.5" ></text>
+</g>
+<g >
+<title>DBM:ENCOUNTER_START DBM-Core/DBM-Core.lua:5101:1 (40,491 Bytes, 0.10%)</title><rect x="46.4" y="469" width="1.5" height="15.0" fill="rgb(253,222,53)" rx="2" ry="2" />
+<text  x="49.35" y="479.5" ></text>
+</g>
+<g >
+<title>Plater.GetAuraIcon Plater/Plater_Auras.lua:1375:1 (15,434 Bytes, 0.04%)</title><rect x="731.9" y="453" width="0.6" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="734.88" y="463.5" ></text>
+</g>
+<g >
+<title>Details:CompressData Details/core/gears.lua:2977:0 (299,540 Bytes, 0.73%)</title><rect x="177.2" y="437" width="11.5" height="15.0" fill="rgb(250,208,49)" rx="2" ry="2" />
+<text  x="180.19" y="447.5" ></text>
+</g>
+<g >
+<title>parser:swing Details/core/parser.lua:306:1 (52,935 Bytes, 0.13%)</title><rect x="169.6" y="469" width="2.0" height="15.0" fill="rgb(209,18,4)" rx="2" ry="2" />
+<text  x="172.59" y="479.5" ></text>
+</g>
+<g >
+<title>tryAnchorAgain WeakAuras/WeakAuras.lua:5633:6 (302,508 Bytes, 0.74%)</title><rect x="1578.3" y="469" width="11.7" height="15.0" fill="rgb(236,144,34)" rx="2" ry="2" />
+<text  x="1581.34" y="479.5" ></text>
+</g>
+<g >
+<title>NotesDB:FormatUnitName CharacterNotes/NotesDB.lua:81:0 (58,720 Bytes, 0.14%)</title><rect x="27.8" y="421" width="2.3" height="15.0" fill="rgb(253,222,53)" rx="2" ry="2" />
+<text  x="30.83" y="431.5" ></text>
+</g>
+<g >
+<title>(anonymous) Auctionator/Libs/LibSerialize/LibSerialize.lua:776:43 (29,146 Bytes, 0.07%)</title><rect x="657.8" y="261" width="1.1" height="15.0" fill="rgb(212,33,8)" rx="2" ry="2" />
+<text  x="660.78" y="271.5" ></text>
+</g>
+<g >
+<title>DBM:StartCombat DBM-Core/DBM-Core.lua:5460:1 (38,698 Bytes, 0.09%)</title><rect x="46.4" y="453" width="1.5" height="15.0" fill="rgb(239,157,37)" rx="2" ry="2" />
+<text  x="49.42" y="463.5" ></text>
+</g>
+<g >
+<title>CompressDeflateInternal DBM-Core/Libs/LibDeflate/LibDeflate.lua:1960:6 (61,127 Bytes, 0.15%)</title><rect x="662.6" y="341" width="2.3" height="15.0" fill="rgb(247,193,46)" rx="2" ry="2" />
+<text  x="665.55" y="351.5" ></text>
+</g>
+<g >
+<title>NotesDB:ParseName CharacterNotes/NotesDB.lua:70:0 (5,760 Bytes, 0.01%)</title><rect x="1066.9" y="389" width="0.2" height="15.0" fill="rgb(214,42,10)" rx="2" ry="2" />
+<text  x="1069.89" y="399.5" ></text>
+</g>
+<g >
+<title>GetHuffmanForDecode DBM-Core/Libs/LibDeflate/LibDeflate.lua:2303:6 (10,456 Bytes, 0.03%)</title><rect x="657.2" y="325" width="0.4" height="15.0" fill="rgb(240,161,38)" rx="2" ry="2" />
+<text  x="660.18" y="335.5" ></text>
+</g>
+<g >
+<title>Private.ActivateAuraEnvironment WeakAuras/AuraEnvironment.lua:278:0 (14,160 Bytes, 0.03%)</title><rect x="1568.2" y="373" width="0.5" height="15.0" fill="rgb(233,129,31)" rx="2" ry="2" />
+<text  x="1571.19" y="383.5" ></text>
+</g>
+<g >
+<title>NotesDB:ParseName CharacterNotes/NotesDB.lua:70:0 (58,560 Bytes, 0.14%)</title><rect x="34.7" y="405" width="2.3" height="15.0" fill="rgb(214,42,10)" rx="2" ry="2" />
+<text  x="37.70" y="415.5" ></text>
+</g>
+<g >
+<title>parser:swingmissed Details/core/parser.lua:1207:1 (17,661 Bytes, 0.04%)</title><rect x="171.6" y="469" width="0.7" height="15.0" fill="rgb(225,95,22)" rx="2" ry="2" />
+<text  x="174.63" y="479.5" ></text>
+</g>
+<g >
+<title>ThreatMeter:Start Details_TinyThreat/Details_TinyThreat.lua:544:1 (17,168 Bytes, 0.04%)</title><rect x="89.3" y="453" width="0.6" height="15.0" fill="rgb(220,72,17)" rx="2" ry="2" />
+<text  x="92.28" y="463.5" ></text>
+</g>
+<g >
+<title>CastStart Details/Libs/LibClassicCasterino/LibClassicCasterino.lua:103:6 (20,104 Bytes, 0.05%)</title><rect x="372.6" y="453" width="0.8" height="15.0" fill="rgb(214,43,10)" rx="2" ry="2" />
+<text  x="375.61" y="463.5" ></text>
+</g>
+<g >
+<title>_detalhes:CatchRaidBuffUptime Details/classes/classe_others.lua:1392:0 (135,824 Bytes, 0.33%)</title><rect x="151.8" y="437" width="5.2" height="15.0" fill="rgb(223,85,20)" rx="2" ry="2" />
+<text  x="154.78" y="447.5" ></text>
+</g>
+<g >
+<title>combate:CreateLastEventsTable Details/classes/classe_combate.lua:495:1 (3,312 Bytes, 0.01%)</title><rect x="170.2" y="437" width="0.1" height="15.0" fill="rgb(218,60,14)" rx="2" ry="2" />
+<text  x="173.21" y="447.5" ></text>
+</g>
+<g >
+<title>_UpdateStats ExtendedCharacterStats/Modules/Stats.lua:337:15 (532,668 Bytes, 1.30%)</title><rect x="195.6" y="453" width="20.5" height="15.0" fill="rgb(217,55,13)" rx="2" ry="2" />
+<text  x="198.59" y="463.5" ></text>
+</g>
+<g >
+<title>NWB:sendComm NovaWorldBuffs/NWBData.lua:255:0 (75,993 Bytes, 0.19%)</title><rect x="662.5" y="373" width="3.0" height="15.0" fill="rgb(236,142,34)" rx="2" ry="2" />
+<text  x="665.55" y="383.5" ></text>
+</g>
+<g >
+<title>WeakAurasTimers:ScheduleTimerFixed WeakAuras/WeakAuras.lua:61:0 (85,344 Bytes, 0.21%)</title><rect x="1570.1" y="405" width="3.3" height="15.0" fill="rgb(208,14,3)" rx="2" ry="2" />
+<text  x="1573.12" y="415.5" ></text>
+</g>
+<g >
+<title>timerPrototype:Start DBM-Core/DBM-Core.lua:10912:1 (4,308 Bytes, 0.01%)</title><rect x="47.3" y="421" width="0.2" height="15.0" fill="rgb(253,225,53)" rx="2" ry="2" />
+<text  x="50.33" y="431.5" ></text>
+</g>
+<g >
+<title>habilidade_cura:NovaTabela Details/classes/classe_heal_habilidade.lua:18:1 (27,040 Bytes, 0.07%)</title><rect x="147.0" y="437" width="1.0" height="15.0" fill="rgb(219,67,16)" rx="2" ry="2" />
+<text  x="149.96" y="447.5" ></text>
+</g>
+<g >
+<title>Data:GetMP5FromItems ExtendedCharacterStats/Modules/Data/MP5.lua:12:0 (218,097 Bytes, 0.53%)</title><rect x="207.0" y="389" width="8.4" height="15.0" fill="rgb(244,180,43)" rx="2" ry="2" />
+<text  x="210.00" y="399.5" ></text>
+</g>
+<g >
+<title>AceTimer:ScheduleTimer CharacterNotes/Libs/AceTimer-3.0/AceTimer-3.0.lua:94:0 (21,112 Bytes, 0.05%)</title><rect x="218.0" y="421" width="0.8" height="15.0" fill="rgb(249,205,49)" rx="2" ry="2" />
+<text  x="220.98" y="431.5" ></text>
+</g>
+<g >
+<title>atributo_damage:r_connect_shadow Details/classes/classe_damage.lua:5159:2 (26,208 Bytes, 0.06%)</title><rect x="174.0" y="389" width="1.0" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="177.01" y="399.5" ></text>
+</g>
+<g >
+<title>DecompressDynamicBlock DBM-Core/Libs/LibDeflate/LibDeflate.lua:2506:6 (27,928 Bytes, 0.07%)</title><rect x="666.6" y="357" width="1.1" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="669.64" y="367.5" ></text>
+</g>
+<g >
+<title>parser:energize Details/core/parser.lua:2730:1 (46,472 Bytes, 0.11%)</title><rect x="140.4" y="469" width="1.8" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="143.40" y="479.5" ></text>
+</g>
+<g >
+<title>habilidade_dano:NovaTabela Details/classes/classe_damage_habilidade.lua:26:1 (7,744 Bytes, 0.02%)</title><rect x="174.7" y="357" width="0.3" height="15.0" fill="rgb(211,30,7)" rx="2" ry="2" />
+<text  x="177.72" y="367.5" ></text>
+</g>
+<g >
+<title>ShadowUF:FormatLargeNumber ShadowedUnitFrames/modules/tags.lua:328:0 (5,852 Bytes, 0.01%)</title><rect x="1000.3" y="421" width="0.2" height="15.0" fill="rgb(246,189,45)" rx="2" ry="2" />
+<text  x="1003.31" y="431.5" ></text>
+</g>
+<g >
+<title>NotesDB:GetAlternateName CharacterNotes/NotesDB.lua:101:0 (5,760 Bytes, 0.01%)</title><rect x="1067.6" y="405" width="0.2" height="15.0" fill="rgb(206,6,1)" rx="2" ry="2" />
+<text  x="1070.55" y="415.5" ></text>
+</g>
+<g >
+<title>infoFrame:Show DBM-Core/DBM-InfoFrame.lua:1124:0 (8,632 Bytes, 0.02%)</title><rect x="47.0" y="421" width="0.3" height="15.0" fill="rgb(243,176,42)" rx="2" ry="2" />
+<text  x="50.00" y="431.5" ></text>
+</g>
+<g >
+<title>NotesDB:FormatUnitName CharacterNotes/NotesDB.lua:81:0 (5,760 Bytes, 0.01%)</title><rect x="1066.4" y="421" width="0.3" height="15.0" fill="rgb(253,222,53)" rx="2" ry="2" />
+<text  x="1069.44" y="431.5" ></text>
+</g>
+<g >
+<title>LibSerialize:_ClearReferences Auctionator/Libs/LibSerialize/LibSerialize.lua:643:0 (3,744 Bytes, 0.01%)</title><rect x="669.3" y="373" width="0.1" height="15.0" fill="rgb(241,168,40)" rx="2" ry="2" />
+<text  x="672.26" y="383.5" ></text>
+</g>
+<g >
+<title>lib:GetMain CharacterNotes/Libs/LibAlts-1.0/LibAlts-1.0.lua:172:0 (5,248 Bytes, 0.01%)</title><rect x="37.0" y="437" width="0.2" height="15.0" fill="rgb(221,75,18)" rx="2" ry="2" />
+<text  x="39.96" y="447.5" ></text>
+</g>
+<g >
+<title>_detalhes:CommReceived Details/core/network.lua:546:1 (859,925 Bytes, 2.10%)</title><rect x="102.5" y="405" width="33.2" height="15.0" fill="rgb(222,81,19)" rx="2" ry="2" />
+<text  x="105.54" y="415.5" >_d..</text>
+</g>
+<g >
+<title>_detalhes:InstanciaCallFunction Details/classes/classe_instancia.lua:104:0 (6,032 Bytes, 0.01%)</title><rect x="157.1" y="437" width="0.2" height="15.0" fill="rgb(238,155,37)" rx="2" ry="2" />
+<text  x="160.09" y="447.5" ></text>
+</g>
+<g >
+<title>Plater.UpdateAuras_Automatic Plater/Plater_Auras.lua:2106:1 (153,294 Bytes, 0.37%)</title><rect x="697.2" y="437" width="6.0" height="15.0" fill="rgb(249,202,48)" rx="2" ry="2" />
+<text  x="700.25" y="447.5" ></text>
+</g>
+<g >
+<title>Plater.ResetAuraContainer Plater/Plater_Auras.lua:1937:1 (15,120 Bytes, 0.04%)</title><rect x="732.5" y="453" width="0.6" height="15.0" fill="rgb(230,117,28)" rx="2" ry="2" />
+<text  x="735.47" y="463.5" ></text>
+</g>
+<g >
+<title>container_habilidades:PegaHabilidade Details/classes/container_habilidades.lua:62:1 (10,424 Bytes, 0.03%)</title><rect x="141.7" y="453" width="0.4" height="15.0" fill="rgb(248,201,48)" rx="2" ry="2" />
+<text  x="144.74" y="463.5" ></text>
+</g>
+<g >
+<title>TradeTime:process Gargul/Classes/TradeTime.lua:60:0 (3,971,261 Bytes, 9.69%)</title><rect x="218.9" y="437" width="153.1" height="15.0" fill="rgb(232,127,30)" rx="2" ry="2" />
+<text  x="221.89" y="447.5" >TradeTime:process G..</text>
+</g>
+<g >
+<title>GetHuffmanCodeFromBitlen DBM-Core/Libs/LibDeflate/LibDeflate.lua:913:6 (4,432 Bytes, 0.01%)</title><rect x="92.5" y="373" width="0.2" height="15.0" fill="rgb(247,195,46)" rx="2" ry="2" />
+<text  x="95.51" y="383.5" ></text>
+</g>
+<g >
+<title>LibSerialize:DeserializeValue Auctionator/Libs/LibSerialize/LibSerialize.lua:1301:0 (23,576 Bytes, 0.06%)</title><rect x="660.2" y="357" width="0.9" height="15.0" fill="rgb(237,150,35)" rx="2" ry="2" />
+<text  x="663.20" y="367.5" ></text>
+</g>
+<g >
+<title>NotesDB:GetAlternateName CharacterNotes/NotesDB.lua:101:0 (30,570 Bytes, 0.07%)</title><rect x="22.1" y="421" width="1.2" height="15.0" fill="rgb(206,6,1)" rx="2" ry="2" />
+<text  x="25.14" y="431.5" ></text>
+</g>
+<g >
+<title>container_habilidades:PegaHabilidade Details/classes/container_habilidades.lua:62:1 (27,992 Bytes, 0.07%)</title><rect x="146.9" y="453" width="1.1" height="15.0" fill="rgb(248,201,48)" rx="2" ry="2" />
+<text  x="149.93" y="463.5" ></text>
+</g>
+<g >
+<title>lib:GetInventoryItemMixin TacoTip/Libs/LibClassicInspector/LibClassicInspector.lua:3674:0 (1,377,168 Bytes, 3.36%)</title><rect x="1013.3" y="421" width="53.1" height="15.0" fill="rgb(208,15,3)" rx="2" ry="2" />
+<text  x="1016.29" y="431.5" >lib:G..</text>
+</g>
+<g >
+<title>uid AdiBags/libs/AceHook-3.0/AceHook-3.0.lua:87:8 (212,560 Bytes, 0.52%)</title><rect x="1003.8" y="373" width="8.2" height="15.0" fill="rgb(243,178,42)" rx="2" ry="2" />
+<text  x="1006.76" y="383.5" ></text>
+</g>
+<g >
+<title>Private.Animate WeakAuras/Animations.lua:190:0 (20,050 Bytes, 0.05%)</title><rect x="1567.4" y="373" width="0.8" height="15.0" fill="rgb(209,20,4)" rx="2" ry="2" />
+<text  x="1570.39" y="383.5" ></text>
+</g>
+<g >
+<title>CompressDeflateInternal DBM-Core/Libs/LibDeflate/LibDeflate.lua:1960:6 (291,928 Bytes, 0.71%)</title><rect x="91.1" y="437" width="11.2" height="15.0" fill="rgb(247,193,46)" rx="2" ry="2" />
+<text  x="94.09" y="447.5" ></text>
+</g>
+<g >
+<title>container_combatentes:PegarCombatente Details/classes/container_combatentes.lua:483:1 (5,261 Bytes, 0.01%)</title><rect x="171.6" y="437" width="0.2" height="15.0" fill="rgb(223,86,20)" rx="2" ry="2" />
+<text  x="174.63" y="447.5" ></text>
+</g>
+<g >
+<title>atributo_misc:r_connect_shadow Details/classes/classe_others.lua:2471:0 (14,816 Bytes, 0.04%)</title><rect x="175.5" y="389" width="0.6" height="15.0" fill="rgb(209,22,5)" rx="2" ry="2" />
+<text  x="178.50" y="399.5" ></text>
+</g>
+<g >
+<title>mod:SPELL_AURA_APPLIED DBM-Raids-Vanilla/VanillaSoD_Gnomeregan/MechanicalMenagerie.lua:162:0 (9,908 Bytes, 0.02%)</title><rect x="42.8" y="437" width="0.4" height="15.0" fill="rgb(248,199,47)" rx="2" ry="2" />
+<text  x="45.84" y="447.5" ></text>
+</g>
+<g >
+<title>dataFunctionRefs.MP5Items ExtendedCharacterStats/Modules/Data/Data.lua:184:19 (218,097 Bytes, 0.53%)</title><rect x="207.0" y="405" width="8.4" height="15.0" fill="rgb(253,222,53)" rx="2" ry="2" />
+<text  x="210.00" y="415.5" ></text>
+</g>
+<g >
+<title>new CharacterNotes/Libs/AceTimer-3.0/AceTimer-3.0.lua:32:6 (85,344 Bytes, 0.21%)</title><rect x="1570.1" y="373" width="3.3" height="15.0" fill="rgb(247,194,46)" rx="2" ry="2" />
+<text  x="1573.12" y="383.5" ></text>
+</g>
+<g >
+<title>CreateReader Auctionator/Libs/LibSerialize/LibSerialize.lua:490:6 (4,320 Bytes, 0.01%)</title><rect x="671.8" y="357" width="0.2" height="15.0" fill="rgb(219,68,16)" rx="2" ry="2" />
+<text  x="674.83" y="367.5" ></text>
+</g>
+<g >
+<title>NotesDB:ParseName CharacterNotes/NotesDB.lua:70:0 (58,560 Bytes, 0.14%)</title><rect x="32.4" y="405" width="2.3" height="15.0" fill="rgb(214,42,10)" rx="2" ry="2" />
+<text  x="35.44" y="415.5" ></text>
+</g>
+<g >
+<title>NWB:convertKeys NovaWorldBuffs/NWBData.lua:2237:0 (4,720 Bytes, 0.01%)</title><rect x="674.1" y="357" width="0.2" height="15.0" fill="rgb(243,179,42)" rx="2" ry="2" />
+<text  x="677.10" y="367.5" ></text>
+</g>
+<g >
+<title>Plater.RunScriptTriggersForAuraIcons Plater/Plater_Auras.lua:1744:1 (4,128 Bytes, 0.01%)</title><rect x="697.1" y="437" width="0.1" height="15.0" fill="rgb(230,118,28)" rx="2" ry="2" />
+<text  x="700.09" y="447.5" ></text>
+</g>
+<g >
+<title>CharacterNotes (686,683 Bytes, 1.68%)</title><rect x="10.7" y="501" width="26.5" height="15.0" fill="rgb(225,96,22)" rx="2" ry="2" />
+<text  x="13.69" y="511.5" >C..</text>
+</g>
+<g >
+<title>LibSerialize:_ReadTable Auctionator/Libs/LibSerialize/LibSerialize.lua:695:0 (13,760 Bytes, 0.03%)</title><rect x="670.3" y="261" width="0.5" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="673.29" y="271.5" ></text>
+</g>
+<g >
+<title>parser:spell_dmg Details/core/parser.lua:421:1 (441,776 Bytes, 1.08%)</title><rect x="149.3" y="469" width="17.1" height="15.0" fill="rgb(244,181,43)" rx="2" ry="2" />
+<text  x="152.34" y="479.5" ></text>
+</g>
+<g >
+<title>NWB:convertKeys NovaWorldBuffs/NWBData.lua:2237:0 (4,720 Bytes, 0.01%)</title><rect x="671.6" y="357" width="0.2" height="15.0" fill="rgb(243,179,42)" rx="2" ry="2" />
+<text  x="674.61" y="367.5" ></text>
+</g>
+<g >
+<title>DecompressDeflateInternal DBM-Core/Libs/LibDeflate/LibDeflate.lua:2648:6 (742,863 Bytes, 1.81%)</title><rect x="107.1" y="325" width="28.6" height="15.0" fill="rgb(222,82,19)" rx="2" ry="2" />
+<text  x="110.05" y="335.5" >De..</text>
+</g>
+<g >
+<title>NotesDB:GetNote CharacterNotes/NotesDB.lua:107:0 (11,520 Bytes, 0.03%)</title><rect x="1066.9" y="421" width="0.4" height="15.0" fill="rgb(226,99,23)" rx="2" ry="2" />
+<text  x="1069.89" y="431.5" ></text>
+</g>
+<g >
+<title>eventFunctions.NAME_PLATE_UNIT_ADDED Plater/Plater.lua:3164:26 (277,270 Bytes, 0.68%)</title><rect x="945.2" y="437" width="10.7" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="948.19" y="447.5" ></text>
+</g>
+<g >
+<title>tips:UNIT_INVENTORY_CHANGED RXPGuides/Tips.lua:343:0 (35,820 Bytes, 0.09%)</title><rect x="998.7" y="421" width="1.3" height="15.0" fill="rgb(218,62,14)" rx="2" ry="2" />
+<text  x="1001.65" y="431.5" ></text>
+</g>
+<g >
+<title>f:COMBAT_LOG_EVENT_UNFILTERED Details/Libs/LibClassicCasterino/LibClassicCasterino.lua:180:0 (31,438 Bytes, 0.08%)</title><rect x="372.3" y="469" width="1.2" height="15.0" fill="rgb(242,170,40)" rx="2" ry="2" />
+<text  x="375.34" y="479.5" ></text>
+</g>
+<g >
+<title>startFadeINAnimation Details/core/util.lua:483:29 (4,608 Bytes, 0.01%)</title><rect x="176.2" y="405" width="0.2" height="15.0" fill="rgb(239,158,37)" rx="2" ry="2" />
+<text  x="179.19" y="415.5" ></text>
+</g>
+<g >
+<title>habilidade_misc:Add Details/classes/classe_others_habilidade.lua:53:1 (42,560 Bytes, 0.10%)</title><rect x="155.4" y="405" width="1.6" height="15.0" fill="rgb(225,92,22)" rx="2" ry="2" />
+<text  x="158.37" y="415.5" ></text>
+</g>
+<g >
+<title>AceComm:OnReceiveMultipartLast AtlasLootClassic/Libs/AceComm-3.0/AceComm-3.0.lua:199:1 (7,081 Bytes, 0.02%)</title><rect x="10.1" y="469" width="0.3" height="15.0" fill="rgb(231,122,29)" rx="2" ry="2" />
+<text  x="13.15" y="479.5" ></text>
+</g>
+<g >
+<title>Utils:Colorize ExtendedCharacterStats/Modules/Utils.lua:66:0 (17,589 Bytes, 0.04%)</title><rect x="215.4" y="421" width="0.7" height="15.0" fill="rgb(222,81,19)" rx="2" ry="2" />
+<text  x="218.45" y="431.5" ></text>
+</g>
+<g >
+<title>NWB:receivedData NovaWorldBuffs/NWBData.lua:1416:0 (65,664 Bytes, 0.16%)</title><rect x="671.8" y="405" width="2.5" height="15.0" fill="rgb(224,88,21)" rx="2" ry="2" />
+<text  x="674.79" y="415.5" ></text>
+</g>
+<g >
+<title>LoadStringToTable DBM-Core/Libs/LibDeflate/LibDeflate.lua:1184:6 (98,304 Bytes, 0.24%)</title><rect x="85.2" y="389" width="3.8" height="15.0" fill="rgb(225,93,22)" rx="2" ry="2" />
+<text  x="88.24" y="399.5" ></text>
+</g>
+<g >
+<title>createUniqueIdentifier Plater/Plater_ScriptingPanels.lua:339:31 (6,471 Bytes, 0.02%)</title><rect x="675.5" y="373" width="0.3" height="15.0" fill="rgb(249,204,48)" rx="2" ry="2" />
+<text  x="678.53" y="383.5" ></text>
+</g>
+<g >
+<title>handle.Query Questie/Database/compiler.lua:1378:23 (2,978 Bytes, 0.01%)</title><rect x="984.8" y="389" width="0.2" height="15.0" fill="rgb(205,1,0)" rx="2" ry="2" />
+<text  x="987.84" y="399.5" ></text>
+</g>
+<g >
+<title>LibSerialize:SerializeEx Auctionator/Libs/LibSerialize/LibSerialize.lua:1266:0 (2,772 Bytes, 0.01%)</title><rect x="662.3" y="357" width="0.1" height="15.0" fill="rgb(238,154,37)" rx="2" ry="2" />
+<text  x="665.29" y="367.5" ></text>
+</g>
+<g >
+<title>habilidade_misc:Add Details/classes/classe_others_habilidade.lua:53:1 (20,608 Bytes, 0.05%)</title><rect x="137.4" y="437" width="0.8" height="15.0" fill="rgb(225,92,22)" rx="2" ry="2" />
+<text  x="140.42" y="447.5" ></text>
+</g>
+<g >
+<title>_detalhes:AtualizarALL Details/core/control.lua:1545:2 (76,728 Bytes, 0.19%)</title><rect x="188.9" y="453" width="3.0" height="15.0" fill="rgb(205,0,0)" rx="2" ry="2" />
+<text  x="191.91" y="463.5" ></text>
+</g>
+<g >
+<title>Interface:get Gargul/Interface/Interface.lua:1386:0 (3,139 Bytes, 0.01%)</title><rect x="372.2" y="373" width="0.1" height="15.0" fill="rgb(230,116,27)" rx="2" ry="2" />
+<text  x="375.16" y="383.5" ></text>
+</g>
+<g >
+<title>NWB:convertKeys NovaWorldBuffs/NWBData.lua:2237:0 (18,896 Bytes, 0.05%)</title><rect x="673.6" y="373" width="0.7" height="15.0" fill="rgb(243,179,42)" rx="2" ry="2" />
+<text  x="676.55" y="383.5" ></text>
+</g>
+<g >
+<title>_detalhes:SetWindowAlphaForCombat Details/gumps/janela_principal.lua:5011:0 (5,440 Bytes, 0.01%)</title><rect x="176.2" y="437" width="0.2" height="15.0" fill="rgb(216,50,12)" rx="2" ry="2" />
+<text  x="179.16" y="447.5" ></text>
+</g>
+<g >
+<title>DBM:ENCOUNTER_END DBM-Core/DBM-Core.lua:5128:1 (6,747 Bytes, 0.02%)</title><rect x="46.1" y="469" width="0.3" height="15.0" fill="rgb(227,103,24)" rx="2" ry="2" />
+<text  x="49.09" y="479.5" ></text>
+</g>
+<g >
+<title>LibSerialize:_ReadTable Auctionator/Libs/LibSerialize/LibSerialize.lua:695:0 (13,760 Bytes, 0.03%)</title><rect x="672.2" y="261" width="0.5" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="675.21" y="271.5" ></text>
+</g>
+<g >
+<title>(anonymous) Gargul/Classes/Events.lua:165:14 (34,488 Bytes, 0.08%)</title><rect x="217.5" y="469" width="1.4" height="15.0" fill="rgb(231,120,28)" rx="2" ry="2" />
+<text  x="220.54" y="479.5" ></text>
+</g>
+<g >
+<title>f:IgniteHandler Plater/libs/LibClassicDurations/core.lua:564:4 (5,280 Bytes, 0.01%)</title><rect x="377.0" y="437" width="0.2" height="15.0" fill="rgb(214,43,10)" rx="2" ry="2" />
+<text  x="379.98" y="447.5" ></text>
+</g>
+<g >
+<title>_detalhes:comma_value Details/core/util.lua:387:2 (5,014 Bytes, 0.01%)</title><rect x="195.3" y="453" width="0.2" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="198.29" y="463.5" ></text>
+</g>
+<g >
+<title>combate:CreateLastEventsTable Details/classes/classe_combate.lua:495:1 (16,260 Bytes, 0.04%)</title><rect x="158.9" y="453" width="0.6" height="15.0" fill="rgb(218,60,14)" rx="2" ry="2" />
+<text  x="161.90" y="463.5" ></text>
+</g>
+<g >
+<title>LibSerialize:_ReadObject Auctionator/Libs/LibSerialize/LibSerialize.lua:655:0 (16,912 Bytes, 0.04%)</title><rect x="670.2" y="357" width="0.6" height="15.0" fill="rgb(221,77,18)" rx="2" ry="2" />
+<text  x="673.19" y="367.5" ></text>
+</g>
+<g >
+<title>GetHuffmanCodeFromBitlen DBM-Core/Libs/LibDeflate/LibDeflate.lua:913:6 (4,432 Bytes, 0.01%)</title><rect x="79.2" y="357" width="0.2" height="15.0" fill="rgb(247,195,46)" rx="2" ry="2" />
+<text  x="82.21" y="367.5" ></text>
+</g>
+<g >
+<title>new CharacterNotes/Libs/AceTimer-3.0/AceTimer-3.0.lua:32:6 (57,273 Bytes, 0.14%)</title><rect x="74.8" y="453" width="2.2" height="15.0" fill="rgb(247,194,46)" rx="2" ry="2" />
+<text  x="77.77" y="463.5" ></text>
+</g>
+<g >
+<title>NWB:extractSettings NovaWorldBuffs/NWBData.lua:1379:0 (62,319 Bytes, 0.15%)</title><rect x="657.7" y="389" width="2.4" height="15.0" fill="rgb(220,73,17)" rx="2" ry="2" />
+<text  x="660.73" y="399.5" ></text>
+</g>
+<g >
+<title>_detalhes:ColetarLixo Details/core/meta.lua:928:1 (10,215 Bytes, 0.02%)</title><rect x="193.0" y="437" width="0.4" height="15.0" fill="rgb(237,149,35)" rx="2" ry="2" />
+<text  x="196.03" y="447.5" ></text>
+</g>
+<g >
+<title>parser:add_bad_debuff_uptime Details/core/parser.lua:2331:1 (13,216 Bytes, 0.03%)</title><rect x="135.7" y="453" width="0.5" height="15.0" fill="rgb(230,118,28)" rx="2" ry="2" />
+<text  x="138.70" y="463.5" ></text>
+</g>
+<g >
+<title>getUnitAuras Plater/Plater_Auras.lua:645:6 (313,896 Bytes, 0.77%)</title><rect x="703.7" y="405" width="12.1" height="15.0" fill="rgb(210,26,6)" rx="2" ry="2" />
+<text  x="706.73" y="415.5" ></text>
+</g>
+<g >
+<title>Plater.UpdatePlateFrame Plater/Plater.lua:7570:1 (3,296 Bytes, 0.01%)</title><rect x="718.4" y="437" width="0.2" height="15.0" fill="rgb(250,208,49)" rx="2" ry="2" />
+<text  x="721.44" y="447.5" ></text>
+</g>
+<g >
+<title>parserFunctions.SPELL_CAST_SUCCESS Plater/Plater.lua:9215:23 (8,840 Bytes, 0.02%)</title><rect x="956.3" y="469" width="0.4" height="15.0" fill="rgb(235,139,33)" rx="2" ry="2" />
+<text  x="959.34" y="479.5" ></text>
+</g>
+<g >
+<title>timer.callback CharacterNotes/Libs/AceTimer-3.0/AceTimer-3.0.lua:50:18 (326,946 Bytes, 0.80%)</title><rect x="1577.4" y="485" width="12.6" height="15.0" fill="rgb(229,114,27)" rx="2" ry="2" />
+<text  x="1580.40" y="495.5" ></text>
+</g>
+<g >
+<title>uid AdiBags/libs/AceHook-3.0/AceHook-3.0.lua:100:8 (3,888 Bytes, 0.01%)</title><rect x="43.5" y="389" width="0.2" height="15.0" fill="rgb(224,88,21)" rx="2" ry="2" />
+<text  x="46.54" y="399.5" ></text>
+</g>
+<g >
+<title>parser:interrupt Details/core/parser.lua:2970:1 (6,160 Bytes, 0.02%)</title><rect x="148.2" y="469" width="0.3" height="15.0" fill="rgb(214,43,10)" rx="2" ry="2" />
+<text  x="151.24" y="479.5" ></text>
+</g>
+<g >
+<title>LibSerialize:_ReadObject Auctionator/Libs/LibSerialize/LibSerialize.lua:655:0 (5,655 Bytes, 0.01%)</title><rect x="658.7" y="85" width="0.2" height="15.0" fill="rgb(221,77,18)" rx="2" ry="2" />
+<text  x="661.68" y="95.5" ></text>
+</g>
+<g >
+<title>LibClassicInspector (246,178 Bytes, 0.60%)</title><rect x="377.2" y="501" width="9.5" height="15.0" fill="rgb(207,10,2)" rx="2" ry="2" />
+<text  x="380.20" y="511.5" ></text>
+</g>
+<g >
+<title>Deflate DBM-Core/Libs/LibDeflate/LibDeflate.lua:1763:6 (290,356 Bytes, 0.71%)</title><rect x="177.5" y="389" width="11.2" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="180.50" y="399.5" ></text>
+</g>
+<g >
+<title>Plater.CreateUniqueIdentifier Plater/Plater_ScriptingPanels.lua:361:0 (6,471 Bytes, 0.02%)</title><rect x="675.5" y="389" width="0.3" height="15.0" fill="rgb(247,197,47)" rx="2" ry="2" />
+<text  x="678.53" y="399.5" ></text>
+</g>
+<g >
+<title>LibSerialize:_ReadPair Auctionator/Libs/LibSerialize/LibSerialize.lua:760:0 (16,408 Bytes, 0.04%)</title><rect x="660.5" y="165" width="0.6" height="15.0" fill="rgb(252,218,52)" rx="2" ry="2" />
+<text  x="663.47" y="175.5" ></text>
+</g>
+<g >
+<title>Plater.UpdatePlateFrame Plater/Plater.lua:7570:1 (385,749 Bytes, 0.94%)</title><rect x="703.2" y="453" width="14.9" height="15.0" fill="rgb(250,208,49)" rx="2" ry="2" />
+<text  x="706.19" y="463.5" ></text>
+</g>
+<g >
+<title>_detalhes:TrocaSegmentoAtual Details/core/control.lua:1296:2 (6,032 Bytes, 0.01%)</title><rect x="157.1" y="421" width="0.2" height="15.0" fill="rgb(217,55,13)" rx="2" ry="2" />
+<text  x="160.09" y="431.5" ></text>
+</g>
+<g >
+<title>GetHuffmanBitlenAndCode DBM-Core/Libs/LibDeflate/LibDeflate.lua:968:6 (30,928 Bytes, 0.08%)</title><rect x="662.7" y="293" width="1.1" height="15.0" fill="rgb(216,51,12)" rx="2" ry="2" />
+<text  x="665.65" y="303.5" ></text>
+</g>
+<g >
+<title>eventFunctions.PLAYER_TARGET_CHANGED Plater/Plater.lua:2197:26 (10,896 Bytes, 0.03%)</title><rect x="718.6" y="469" width="0.4" height="15.0" fill="rgb(242,173,41)" rx="2" ry="2" />
+<text  x="721.56" y="479.5" ></text>
+</g>
+<g >
+<title>NWB.addClickLinks NovaWorldBuffs/NovaWorldBuffs.lua:470:0 (540,619 Bytes, 1.32%)</title><rect x="633.6" y="485" width="20.9" height="15.0" fill="rgb(230,116,27)" rx="2" ry="2" />
+<text  x="636.64" y="495.5" ></text>
+</g>
+<g >
+<title>parser:spell_dmg Details/core/parser.lua:421:1 (9,520 Bytes, 0.02%)</title><rect x="149.0" y="453" width="0.3" height="15.0" fill="rgb(244,181,43)" rx="2" ry="2" />
+<text  x="151.97" y="463.5" ></text>
+</g>
+<g >
+<title>lib:TitleCase CharacterNotes/Libs/LibAlts-1.0/LibAlts-1.0.lua:413:0 (5,248 Bytes, 0.01%)</title><rect x="37.0" y="421" width="0.2" height="15.0" fill="rgb(232,127,30)" rx="2" ry="2" />
+<text  x="39.96" y="431.5" ></text>
+</g>
+<g >
+<title>TT_GS:GetScore TacoTip/gearscore.lua:236:0 (10,744,930 Bytes, 26.22%)</title><rect x="1079.2" y="453" width="414.2" height="15.0" fill="rgb(215,47,11)" rx="2" ry="2" />
+<text  x="1082.15" y="463.5" >TT_GS:GetScore TacoTip/gearscore.lua:236:0</text>
+</g>
+<g >
+<title>LibSerialize:_ReadTable Auctionator/Libs/LibSerialize/LibSerialize.lua:695:0 (22,760 Bytes, 0.06%)</title><rect x="660.2" y="309" width="0.9" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="663.23" y="319.5" ></text>
+</g>
+<g >
+<title>LibSerialize:_ReadObject Auctionator/Libs/LibSerialize/LibSerialize.lua:655:0 (16,408 Bytes, 0.04%)</title><rect x="660.5" y="149" width="0.6" height="15.0" fill="rgb(221,77,18)" rx="2" ry="2" />
+<text  x="663.47" y="159.5" ></text>
+</g>
+<g >
+<title>eventFunctions.UNIT_PET Plater/Plater.lua:2065:13 (23,264 Bytes, 0.06%)</title><rect x="719.0" y="469" width="0.9" height="15.0" fill="rgb(231,120,28)" rx="2" ry="2" />
+<text  x="721.98" y="479.5" ></text>
+</g>
+<g >
+<title>AceSerializer:Serialize Details/Libs/AceSerializer-3.0/AceSerializer-3.0.lua:122:0 (6,698 Bytes, 0.02%)</title><rect x="90.8" y="453" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="93.84" y="463.5" ></text>
+</g>
+<g >
+<title>parser:range Details/core/parser.lua:311:1 (9,520 Bytes, 0.02%)</title><rect x="149.0" y="469" width="0.3" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="151.97" y="479.5" ></text>
+</g>
+<g >
+<title>Deflate DBM-Core/Libs/LibDeflate/LibDeflate.lua:1763:6 (290,356 Bytes, 0.71%)</title><rect x="91.1" y="421" width="11.2" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="94.13" y="431.5" ></text>
+</g>
+<g >
+<title>(anonymous) Details/core/gears.lua:1945:36 (66,393 Bytes, 0.16%)</title><rect x="74.4" y="485" width="2.6" height="15.0" fill="rgb(236,144,34)" rx="2" ry="2" />
+<text  x="77.42" y="495.5" ></text>
+</g>
+<g >
+<title>historico:adicionar_overall Details/classes/container_historico.lua:50:0 (56,672 Bytes, 0.14%)</title><rect x="173.9" y="421" width="2.2" height="15.0" fill="rgb(245,185,44)" rx="2" ry="2" />
+<text  x="176.88" y="431.5" ></text>
+</g>
+<g >
+<title>container_habilidades:PegaHabilidade Details/classes/container_habilidades.lua:62:1 (8,024 Bytes, 0.02%)</title><rect x="174.7" y="373" width="0.3" height="15.0" fill="rgb(248,201,48)" rx="2" ry="2" />
+<text  x="177.71" y="383.5" ></text>
+</g>
+<g >
+<title>Gargul (4,033,293 Bytes, 9.84%)</title><rect x="216.9" y="501" width="155.4" height="15.0" fill="rgb(223,82,19)" rx="2" ry="2" />
+<text  x="219.85" y="511.5" >Gargul</text>
+</g>
+<g >
+<title>table.copy Plater/libs/DF/fw.lua:740:0 (85,183 Bytes, 0.21%)</title><rect x="688.4" y="357" width="3.3" height="15.0" fill="rgb(239,159,38)" rx="2" ry="2" />
+<text  x="691.43" y="367.5" ></text>
+</g>
+<g >
+<title>mod:OnCombatStart DBM-Raids-Vanilla/VanillaSoD_Gnomeregan/MechanicalMenagerie.lua:84:0 (12,940 Bytes, 0.03%)</title><rect x="47.0" y="437" width="0.5" height="15.0" fill="rgb(234,136,32)" rx="2" ry="2" />
+<text  x="50.00" y="447.5" ></text>
+</g>
+<g >
+<title>regfunc AdiBags/libs/CallbackHandler-1.0/CallbackHandler-1.0.lua:109:14 (859,925 Bytes, 2.10%)</title><rect x="102.5" y="421" width="33.2" height="15.0" fill="rgb(206,8,2)" rx="2" ry="2" />
+<text  x="105.54" y="431.5" >re..</text>
+</g>
+<g >
+<title>Plater.NameplateTick Plater/Plater.lua:6005:1 (331,148 Bytes, 0.81%)</title><rect x="703.5" y="437" width="12.8" height="15.0" fill="rgb(225,93,22)" rx="2" ry="2" />
+<text  x="706.50" y="447.5" ></text>
+</g>
+<g >
+<title>parser:spell_dmg Details/core/parser.lua:421:1 (52,935 Bytes, 0.13%)</title><rect x="169.6" y="453" width="2.0" height="15.0" fill="rgb(244,181,43)" rx="2" ry="2" />
+<text  x="172.59" y="463.5" ></text>
+</g>
+<g >
+<title>GetBlockLZ77Result DBM-Core/Libs/LibDeflate/LibDeflate.lua:1241:6 (21,744 Bytes, 0.05%)</title><rect x="663.9" y="309" width="0.9" height="15.0" fill="rgb(239,160,38)" rx="2" ry="2" />
+<text  x="666.94" y="319.5" ></text>
+</g>
+<g >
+<title>Details:CompressData Details/core/gears.lua:2977:0 (299,226 Bytes, 0.73%)</title><rect x="90.8" y="469" width="11.6" height="15.0" fill="rgb(250,208,49)" rx="2" ry="2" />
+<text  x="93.83" y="479.5" ></text>
+</g>
+<g >
+<title>Plater.RunFunctionForEvent Plater/Plater.lua:3901:1 (280,502 Bytes, 0.68%)</title><rect x="945.2" y="469" width="10.8" height="15.0" fill="rgb(215,47,11)" rx="2" ry="2" />
+<text  x="948.19" y="479.5" ></text>
+</g>
+<g >
+<title>LibSerialize:_ReadObject Auctionator/Libs/LibSerialize/LibSerialize.lua:655:0 (22,496 Bytes, 0.05%)</title><rect x="660.2" y="277" width="0.9" height="15.0" fill="rgb(221,77,18)" rx="2" ry="2" />
+<text  x="663.24" y="287.5" ></text>
+</g>
+<g >
+<title>GetHuffmanBitlenAndCode DBM-Core/Libs/LibDeflate/LibDeflate.lua:968:6 (32,872 Bytes, 0.08%)</title><rect x="91.4" y="389" width="1.3" height="15.0" fill="rgb(216,51,12)" rx="2" ry="2" />
+<text  x="94.41" y="399.5" ></text>
+</g>
+<g >
+<title>ApplyStateToRegion WeakAuras/WeakAuras.lua:4557:6 (20,690 Bytes, 0.05%)</title><rect x="1567.4" y="405" width="0.8" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="1570.39" y="415.5" ></text>
+</g>
+<g >
+<title>atributo_energy:r_connect_shadow Details/classes/classe_energy.lua:1430:2 (3,920 Bytes, 0.01%)</title><rect x="175.0" y="389" width="0.2" height="15.0" fill="rgb(222,81,19)" rx="2" ry="2" />
+<text  x="178.02" y="399.5" ></text>
+</g>
+<g >
+<title>Data:GetMP5FromItems ExtendedCharacterStats/Modules/Data/MP5.lua:12:0 (208,928 Bytes, 0.51%)</title><rect x="198.9" y="373" width="8.1" height="15.0" fill="rgb(244,180,43)" rx="2" ry="2" />
+<text  x="201.94" y="383.5" ></text>
+</g>
+<g >
+<title>ScanUnit WeakAuras/BuffTrigger2.lua:2068:6 (23,232 Bytes, 0.06%)</title><rect x="1510.8" y="469" width="0.9" height="15.0" fill="rgb(220,69,16)" rx="2" ry="2" />
+<text  x="1513.79" y="479.5" ></text>
+</g>
+<g >
+<title>announcePrototype:Show DBM-Core/DBM-Core.lua:9119:1 (3,910 Bytes, 0.01%)</title><rect x="43.2" y="421" width="0.2" height="15.0" fill="rgb(220,70,16)" rx="2" ry="2" />
+<text  x="46.22" y="431.5" ></text>
+</g>
+<g >
+<title>DeserializeValue Details/Libs/AceSerializer-3.0/AceSerializer-3.0.lua:172:6 (4,580 Bytes, 0.01%)</title><rect x="102.7" y="325" width="0.1" height="15.0" fill="rgb(216,54,12)" rx="2" ry="2" />
+<text  x="105.66" y="335.5" ></text>
+</g>
+<g >
+<title>(anonymous) Plater/libs/DF/mixins.lua:363:21 (5,376 Bytes, 0.01%)</title><rect x="694.7" y="453" width="0.2" height="15.0" fill="rgb(220,71,17)" rx="2" ry="2" />
+<text  x="697.67" y="463.5" ></text>
+</g>
+<g >
+<title>_detalhes:ToK2 Details/core/util.lua:295:2 (20,681 Bytes, 0.05%)</title><rect x="190.8" y="405" width="0.8" height="15.0" fill="rgb(208,16,3)" rx="2" ry="2" />
+<text  x="193.84" y="415.5" ></text>
+</g>
+<g >
+<title>FazColeta Details/core/meta.lua:858:7 (5,328 Bytes, 0.01%)</title><rect x="193.7" y="421" width="0.2" height="15.0" fill="rgb(244,181,43)" rx="2" ry="2" />
+<text  x="196.72" y="431.5" ></text>
+</g>
+<g >
+<title>tagPool.? ShadowedUnitFrames/modules/tags.lua:219:17 (7,131 Bytes, 0.02%)</title><rect x="1000.3" y="437" width="0.2" height="15.0" fill="rgb(232,126,30)" rx="2" ry="2" />
+<text  x="1003.26" y="447.5" ></text>
+</g>
+<g >
+<title>WeakAuras.ScanEventsInternal WeakAuras/GenericTrigger.lua:851:0 (1,660,647 Bytes, 4.05%)</title><rect x="1511.8" y="453" width="64.0" height="15.0" fill="rgb(234,134,32)" rx="2" ry="2" />
+<text  x="1514.75" y="463.5" >WeakAur..</text>
+</g>
+<g >
+<title>ShadowUF:FormatLargeNumber ShadowedUnitFrames/modules/tags.lua:328:0 (3,081 Bytes, 0.01%)</title><rect x="1003.6" y="453" width="0.1" height="15.0" fill="rgb(246,189,45)" rx="2" ry="2" />
+<text  x="1006.60" y="463.5" ></text>
+</g>
+<g >
+<title>UpdateAnimations WeakAuras/Animations.lua:162:6 (41,280 Bytes, 0.10%)</title><rect x="1575.8" y="485" width="1.6" height="15.0" fill="rgb(253,221,53)" rx="2" ry="2" />
+<text  x="1578.77" y="495.5" ></text>
+</g>
+<g >
+<title>atributo_heal:NovaTabela Details/classes/classe_heal.lua:70:0 (2,664 Bytes, 0.01%)</title><rect x="175.3" y="357" width="0.1" height="15.0" fill="rgb(230,115,27)" rx="2" ry="2" />
+<text  x="178.31" y="367.5" ></text>
+</g>
+<g >
+<title>CompressDynamicHuffmanBlock DBM-Core/Libs/LibDeflate/LibDeflate.lua:1571:6 (7,068 Bytes, 0.02%)</title><rect x="77.8" y="389" width="0.3" height="15.0" fill="rgb(210,23,5)" rx="2" ry="2" />
+<text  x="80.84" y="399.5" ></text>
+</g>
+<g >
+<title>Deflate DBM-Core/Libs/LibDeflate/LibDeflate.lua:1763:6 (59,911 Bytes, 0.15%)</title><rect x="662.6" y="325" width="2.3" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="665.59" y="335.5" ></text>
+</g>
+<g >
+<title>LibSerialize:_ReadObject Auctionator/Libs/LibSerialize/LibSerialize.lua:655:0 (27,130 Bytes, 0.07%)</title><rect x="657.9" y="213" width="1.0" height="15.0" fill="rgb(221,77,18)" rx="2" ry="2" />
+<text  x="660.86" y="223.5" ></text>
+</g>
+<g >
+<title>(anonymous) NovaWorldBuffs/NWBData.lua:2875:22 (5,391,960 Bytes, 13.16%)</title><rect x="386.7" y="485" width="207.9" height="15.0" fill="rgb(212,35,8)" rx="2" ry="2" />
+<text  x="389.70" y="495.5" >(anonymous) NovaWorldBuffs/..</text>
+</g>
+<g >
+<title>AceTimer:ScheduleTimer CharacterNotes/Libs/AceTimer-3.0/AceTimer-3.0.lua:94:0 (5,824 Bytes, 0.01%)</title><rect x="176.4" y="437" width="0.3" height="15.0" fill="rgb(249,205,49)" rx="2" ry="2" />
+<text  x="179.43" y="447.5" ></text>
+</g>
+<g >
+<title>NotesDB:ParseName CharacterNotes/NotesDB.lua:70:0 (58,560 Bytes, 0.14%)</title><rect x="23.3" y="421" width="2.3" height="15.0" fill="rgb(214,42,10)" rx="2" ry="2" />
+<text  x="26.32" y="431.5" ></text>
+</g>
+<g >
+<title>DecompressDeflateInternal DBM-Core/Libs/LibDeflate/LibDeflate.lua:2648:6 (90,745 Bytes, 0.22%)</title><rect x="665.5" y="389" width="3.5" height="15.0" fill="rgb(222,82,19)" rx="2" ry="2" />
+<text  x="668.50" y="399.5" ></text>
+</g>
+<g >
+<title>handleSync DBM-Core/DBM-Core.lua:4848:14 (2,938 Bytes, 0.01%)</title><rect x="42.6" y="453" width="0.1" height="15.0" fill="rgb(220,72,17)" rx="2" ry="2" />
+<text  x="45.57" y="463.5" ></text>
+</g>
+<g >
+<title>habilidade_dano:NovaTabela Details/classes/classe_damage_habilidade.lua:26:1 (11,616 Bytes, 0.03%)</title><rect x="148.5" y="437" width="0.4" height="15.0" fill="rgb(211,30,7)" rx="2" ry="2" />
+<text  x="151.48" y="447.5" ></text>
+</g>
+<g >
+<title>_detalhes:SendEvent Details/functions/events.lua:285:1 (7,840 Bytes, 0.02%)</title><rect x="157.3" y="437" width="0.3" height="15.0" fill="rgb(216,53,12)" rx="2" ry="2" />
+<text  x="160.32" y="447.5" ></text>
+</g>
+<g >
+<title>tagPool.? ShadowedUnitFrames/modules/tags.lua:219:17 (54,737 Bytes, 0.13%)</title><rect x="1001.6" y="469" width="2.1" height="15.0" fill="rgb(232,126,30)" rx="2" ry="2" />
+<text  x="1004.61" y="479.5" ></text>
+</g>
+<g >
+<title>NWB:throddleEventByFunc NovaWorldBuffs/NWBData.lua:2871:0 (6,960 Bytes, 0.02%)</title><rect x="594.6" y="469" width="0.2" height="15.0" fill="rgb(243,179,42)" rx="2" ry="2" />
+<text  x="597.56" y="479.5" ></text>
+</g>
+<g >
+<title>NWB:pairsByKeys NovaWorldBuffs/NovaWorldBuffs.lua:4835:0 (387,040 Bytes, 0.94%)</title><rect x="596.6" y="453" width="14.9" height="15.0" fill="rgb(229,112,26)" rx="2" ry="2" />
+<text  x="599.55" y="463.5" ></text>
+</g>
+<g >
+<title>habilidade_dano:NovaTabela Details/classes/classe_damage_habilidade.lua:26:1 (115,674 Bytes, 0.28%)</title><rect x="161.4" y="437" width="4.4" height="15.0" fill="rgb(211,30,7)" rx="2" ry="2" />
+<text  x="164.39" y="447.5" ></text>
+</g>
+<g >
+<title>_detalhes:TerminarTempo Details/core/timemachine.lua:222:1 (5,376 Bytes, 0.01%)</title><rect x="173.6" y="421" width="0.2" height="15.0" fill="rgb(233,128,30)" rx="2" ry="2" />
+<text  x="176.60" y="431.5" ></text>
+</g>
+<g >
+<title>WriteBits DBM-Core/Libs/LibDeflate/LibDeflate.lua:749:8 (7,068 Bytes, 0.02%)</title><rect x="77.8" y="373" width="0.3" height="15.0" fill="rgb(227,101,24)" rx="2" ry="2" />
+<text  x="80.84" y="383.5" ></text>
+</g>
+<g >
+<title>(anonymous) Plater/libs/DF/icon.lua:180:11 (9,892 Bytes, 0.02%)</title><rect x="715.8" y="389" width="0.4" height="15.0" fill="rgb(240,162,38)" rx="2" ry="2" />
+<text  x="718.84" y="399.5" ></text>
+</g>
+<g >
+<title>DeserializeValue Details/Libs/AceSerializer-3.0/AceSerializer-3.0.lua:172:6 (4,615 Bytes, 0.01%)</title><rect x="102.7" y="373" width="0.1" height="15.0" fill="rgb(216,54,12)" rx="2" ry="2" />
+<text  x="105.66" y="383.5" ></text>
+</g>
+<g >
+<title>NotesDB:ParseName CharacterNotes/NotesDB.lua:70:0 (58,223 Bytes, 0.14%)</title><rect x="30.2" y="405" width="2.2" height="15.0" fill="rgb(214,42,10)" rx="2" ry="2" />
+<text  x="33.20" y="415.5" ></text>
+</g>
+<g >
+<title>(anonymous) Auctionator/Libs/LibSerialize/LibSerialize.lua:776:43 (16,912 Bytes, 0.04%)</title><rect x="672.1" y="341" width="0.7" height="15.0" fill="rgb(212,33,8)" rx="2" ry="2" />
+<text  x="675.11" y="351.5" ></text>
+</g>
+<g >
+<title>container_habilidades:PegaHabilidade Details/classes/container_habilidades.lua:62:1 (31,264 Bytes, 0.08%)</title><rect x="136.2" y="437" width="1.2" height="15.0" fill="rgb(248,201,48)" rx="2" ry="2" />
+<text  x="139.21" y="447.5" ></text>
+</g>
+<g >
+<title>CreateDecompressState DBM-Core/Libs/LibDeflate/LibDeflate.lua:2277:6 (28,080 Bytes, 0.07%)</title><rect x="665.5" y="373" width="1.1" height="15.0" fill="rgb(253,224,53)" rx="2" ry="2" />
+<text  x="668.50" y="383.5" ></text>
+</g>
+<g >
+<title>container_combatentes:PegarCombatente Details/classes/container_combatentes.lua:483:1 (4,160 Bytes, 0.01%)</title><rect x="136.0" y="437" width="0.2" height="15.0" fill="rgb(223,86,20)" rx="2" ry="2" />
+<text  x="138.99" y="447.5" ></text>
+</g>
+<g >
+<title>regfunc AdiBags/libs/CallbackHandler-1.0/CallbackHandler-1.0.lua:109:14 (229,521 Bytes, 0.56%)</title><rect x="665.5" y="437" width="8.8" height="15.0" fill="rgb(206,8,2)" rx="2" ry="2" />
+<text  x="668.48" y="447.5" ></text>
+</g>
+<g >
+<title>LibSerialize:DeserializeValue Auctionator/Libs/LibSerialize/LibSerialize.lua:1301:0 (25,072 Bytes, 0.06%)</title><rect x="671.8" y="373" width="1.0" height="15.0" fill="rgb(237,150,35)" rx="2" ry="2" />
+<text  x="674.79" y="383.5" ></text>
+</g>
+<g >
+<title>Inflate DBM-Core/Libs/LibDeflate/LibDeflate.lua:2620:6 (729,903 Bytes, 1.78%)</title><rect x="107.6" y="309" width="28.1" height="15.0" fill="rgb(252,220,52)" rx="2" ry="2" />
+<text  x="110.55" y="319.5" >I..</text>
+</g>
+<g >
+<title>NotesDB:FormatUnitName CharacterNotes/NotesDB.lua:81:0 (43,575 Bytes, 0.11%)</title><rect x="20.5" y="421" width="1.6" height="15.0" fill="rgb(253,222,53)" rx="2" ry="2" />
+<text  x="23.46" y="431.5" ></text>
+</g>
+<g >
+<title>AnnoyingPopupRemover (2,674 Bytes, 0.01%)</title><rect x="10.6" y="501" width="0.1" height="15.0" fill="rgb(228,107,25)" rx="2" ry="2" />
+<text  x="13.58" y="511.5" ></text>
+</g>
+<g >
+<title>infoTick TacoTip/Libs/LibClassicInspector/LibClassicInspector.lua:3161:6 (14,100 Bytes, 0.03%)</title><rect x="386.1" y="485" width="0.6" height="15.0" fill="rgb(214,44,10)" rx="2" ry="2" />
+<text  x="389.15" y="495.5" ></text>
+</g>
+<g >
+<title>HandleEvent WeakAuras/GenericTrigger.lua:1079:0 (1,662,426 Bytes, 4.06%)</title><rect x="1511.7" y="485" width="64.1" height="15.0" fill="rgb(228,107,25)" rx="2" ry="2" />
+<text  x="1514.68" y="495.5" >HandleE..</text>
+</g>
+<g >
+<title>Combat:Update ShadowedUnitFrames/modules/combattext.lua:37:0 (5,073 Bytes, 0.01%)</title><rect x="1000.8" y="469" width="0.2" height="15.0" fill="rgb(214,44,10)" rx="2" ry="2" />
+<text  x="1003.77" y="479.5" ></text>
+</g>
+<g >
+<title>atributo_energy:ColetarLixo Details/classes/classe_energy.lua:1509:0 (6,464 Bytes, 0.02%)</title><rect x="193.4" y="453" width="0.3" height="15.0" fill="rgb(222,81,19)" rx="2" ry="2" />
+<text  x="196.43" y="463.5" ></text>
+</g>
+<g >
+<title>(anonymous) CharacterNotes/Libs/AceEvent-3.0/AceEvent-3.0.lua:119:36 (389,581 Bytes, 0.95%)</title><rect x="985.0" y="485" width="15.0" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="988.01" y="495.5" ></text>
+</g>
+<g >
+<title>barPrototype:AnimateEnlarge DBM-StatusBarTimers/DBT.lua:1130:0 (5,720 Bytes, 0.01%)</title><rect x="73.5" y="453" width="0.2" height="15.0" fill="rgb(235,138,33)" rx="2" ry="2" />
+<text  x="76.52" y="463.5" ></text>
+</g>
+<g >
+<title>ReadBytes Auctionator/Libs/LibSerialize/LibSerialize.lua:497:10 (4,375 Bytes, 0.01%)</title><rect x="658.7" y="37" width="0.1" height="15.0" fill="rgb(233,130,31)" rx="2" ry="2" />
+<text  x="661.68" y="47.5" ></text>
+</g>
+<g >
+<title>DBT:CreateBar DBM-StatusBarTimers/DBT.lua:277:1 (4,280 Bytes, 0.01%)</title><rect x="43.0" y="405" width="0.2" height="15.0" fill="rgb(235,141,33)" rx="2" ry="2" />
+<text  x="46.03" y="415.5" ></text>
+</g>
+<g >
+<title>LibSerialize:_ReadPair Auctionator/Libs/LibSerialize/LibSerialize.lua:760:0 (14,720 Bytes, 0.04%)</title><rect x="670.3" y="309" width="0.5" height="15.0" fill="rgb(252,218,52)" rx="2" ry="2" />
+<text  x="673.28" y="319.5" ></text>
+</g>
+<g >
+<title>(anonymous) Plater/libs/DF/loadconditions.lua:122:34 (451,203 Bytes, 1.10%)</title><rect x="674.3" y="485" width="17.4" height="15.0" fill="rgb(252,217,52)" rx="2" ry="2" />
+<text  x="677.32" y="495.5" ></text>
+</g>
+<g >
+<title>DBM-StatusBarTimers (43,930 Bytes, 0.11%)</title><rect x="72.7" y="501" width="1.7" height="15.0" fill="rgb(253,222,53)" rx="2" ry="2" />
+<text  x="75.66" y="511.5" ></text>
+</g>
+<g >
+<title>DF.UnitGroupRolesAssigned Details/Libs/DetailsFramework/lib/fw.lua:239:0 (8,544 Bytes, 0.02%)</title><rect x="157.7" y="421" width="0.4" height="15.0" fill="rgb(229,112,26)" rx="2" ry="2" />
+<text  x="160.74" y="431.5" ></text>
+</g>
+<g >
+<title>DeserializeValue Details/Libs/AceSerializer-3.0/AceSerializer-3.0.lua:172:6 (90,844 Bytes, 0.22%)</title><rect x="103.5" y="325" width="3.5" height="15.0" fill="rgb(216,54,12)" rx="2" ry="2" />
+<text  x="106.49" y="335.5" ></text>
+</g>
+<g >
+<title>NWB:config NovaWorldBuffs/Options.lua:3750:0 (7,869 Bytes, 0.02%)</title><rect x="659.8" y="309" width="0.3" height="15.0" fill="rgb(248,202,48)" rx="2" ry="2" />
+<text  x="662.83" y="319.5" ></text>
+</g>
+<g >
+<title>lib:GetInventoryItemMixin TacoTip/Libs/LibClassicInspector/LibClassicInspector.lua:3674:0 (201,312 Bytes, 0.49%)</title><rect x="1003.9" y="325" width="7.8" height="15.0" fill="rgb(208,15,3)" rx="2" ry="2" />
+<text  x="1006.95" y="335.5" ></text>
+</g>
+<g >
+<title>(anonymous) NovaWorldBuffs/NovaWorldBuffs.lua:11765:23 (388,182 Bytes, 0.95%)</title><rect x="596.5" y="485" width="15.0" height="15.0" fill="rgb(231,121,29)" rx="2" ry="2" />
+<text  x="599.51" y="495.5" ></text>
+</g>
+<g >
+<title>DeserializeValue Details/Libs/AceSerializer-3.0/AceSerializer-3.0.lua:172:6 (4,615 Bytes, 0.01%)</title><rect x="102.7" y="357" width="0.1" height="15.0" fill="rgb(216,54,12)" rx="2" ry="2" />
+<text  x="105.66" y="367.5" ></text>
+</g>
+<g >
+<title>region:Collapse WeakAuras/RegionTypes/RegionPrototype.lua:1001:4 (24,438 Bytes, 0.06%)</title><rect x="1577.4" y="437" width="0.9" height="15.0" fill="rgb(250,211,50)" rx="2" ry="2" />
+<text  x="1580.40" y="447.5" ></text>
+</g>
+<g >
+<title>handleEvent DBM-Core/DBM-Core.lua:1144:7 (85,307 Bytes, 0.21%)</title><rect x="42.8" y="453" width="3.3" height="15.0" fill="rgb(205,4,1)" rx="2" ry="2" />
+<text  x="45.80" y="463.5" ></text>
+</g>
+<g >
+<title>_detalhes:SendRaidData Details/core/network.lua:702:1 (4,519 Bytes, 0.01%)</title><rect x="89.1" y="453" width="0.1" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="92.07" y="463.5" ></text>
+</g>
+<g >
+<title>atributo_heal:RefreshBarra2 Details/classes/classe_heal.lua:814:0 (5,996 Bytes, 0.01%)</title><rect x="191.6" y="405" width="0.3" height="15.0" fill="rgb(250,207,49)" rx="2" ry="2" />
+<text  x="194.63" y="415.5" ></text>
+</g>
+<g >
+<title>atributo_heal:NovaTabela Details/classes/classe_heal.lua:70:0 (7,992 Bytes, 0.02%)</title><rect x="146.6" y="421" width="0.3" height="15.0" fill="rgb(230,115,27)" rx="2" ry="2" />
+<text  x="149.62" y="431.5" ></text>
+</g>
+<g >
+<title>lib:GetInventoryItemMixin TacoTip/Libs/LibClassicInspector/LibClassicInspector.lua:3674:0 (10,588,243 Bytes, 25.83%)</title><rect x="1085.2" y="437" width="408.2" height="15.0" fill="rgb(208,15,3)" rx="2" ry="2" />
+<text  x="1088.19" y="447.5" >lib:GetInventoryItemMixin TacoTip/Libs/LibClassicInspec..</text>
+</g>
+<g >
+<title>DecompressDeflateInternal DBM-Core/Libs/LibDeflate/LibDeflate.lua:2648:6 (78,609 Bytes, 0.19%)</title><rect x="654.6" y="373" width="3.0" height="15.0" fill="rgb(222,82,19)" rx="2" ry="2" />
+<text  x="657.55" y="383.5" ></text>
+</g>
+<g >
+<title>parser_functions:UNIT_PET Details/core/parser.lua:4320:1 (6,087 Bytes, 0.01%)</title><rect x="176.4" y="469" width="0.3" height="15.0" fill="rgb(252,216,51)" rx="2" ry="2" />
+<text  x="179.43" y="479.5" ></text>
+</g>
+<g >
+<title>LibSerialize:_ReadTable Auctionator/Libs/LibSerialize/LibSerialize.lua:695:0 (20,240 Bytes, 0.05%)</title><rect x="660.3" y="181" width="0.8" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="663.32" y="191.5" ></text>
+</g>
+<g >
+<title>combate.__add Details/classes/classe_combate.lua:641:17 (56,376 Bytes, 0.14%)</title><rect x="173.9" y="405" width="2.2" height="15.0" fill="rgb(215,47,11)" rx="2" ry="2" />
+<text  x="176.90" y="415.5" ></text>
+</g>
+<g >
+<title>GetHuffmanCodeFromBitlen DBM-Core/Libs/LibDeflate/LibDeflate.lua:913:6 (4,432 Bytes, 0.01%)</title><rect x="178.9" y="341" width="0.1" height="15.0" fill="rgb(247,195,46)" rx="2" ry="2" />
+<text  x="181.88" y="351.5" ></text>
+</g>
+<g >
+<title>QuestieCompat.GetContainerItemInfo Questie/Modules/QuestieCompat.lua:168:0 (168,576 Bytes, 0.41%)</title><rect x="978.2" y="405" width="6.5" height="15.0" fill="rgb(248,201,48)" rx="2" ry="2" />
+<text  x="981.16" y="415.5" ></text>
+</g>
+<g >
+<title>GL:after Gargul/Classes/Helpers.lua:1214:0 (29,320 Bytes, 0.07%)</title><rect x="217.7" y="437" width="1.1" height="15.0" fill="rgb(223,86,20)" rx="2" ry="2" />
+<text  x="220.68" y="447.5" ></text>
+</g>
+<g >
+<title>RXPGuides (395,456 Bytes, 0.96%)</title><rect x="985.0" y="501" width="15.3" height="15.0" fill="rgb(214,43,10)" rx="2" ry="2" />
+<text  x="988.01" y="511.5" ></text>
+</g>
+<g >
+<title>AddNoteForChat CharacterNotes/CharacterNotes.lua:1458:6 (74,145 Bytes, 0.18%)</title><rect x="20.5" y="453" width="2.8" height="15.0" fill="rgb(225,92,22)" rx="2" ry="2" />
+<text  x="23.46" y="463.5" ></text>
+</g>
+<g >
+<title>Plater.UpdateAuras_Automatic Plater/Plater_Auras.lua:2106:1 (5,520,717 Bytes, 13.47%)</title><rect x="731.0" y="469" width="212.8" height="15.0" fill="rgb(249,202,48)" rx="2" ry="2" />
+<text  x="734.02" y="479.5" >Plater.UpdateAuras_Automatic..</text>
+</g>
+<g >
+<title>parser:add_buff_uptime Details/core/parser.lua:2532:1 (51,872 Bytes, 0.13%)</title><rect x="136.2" y="453" width="2.0" height="15.0" fill="rgb(229,111,26)" rx="2" ry="2" />
+<text  x="139.21" y="463.5" ></text>
+</g>
+<g >
+<title>habilidade_misc:NovaTabela Details/classes/classe_others_habilidade.lua:24:1 (56,240 Bytes, 0.14%)</title><rect x="153.2" y="389" width="2.2" height="15.0" fill="rgb(211,28,6)" rx="2" ry="2" />
+<text  x="156.20" y="399.5" ></text>
+</g>
+<g >
+<title>LibSerialize:_ReadTable Auctionator/Libs/LibSerialize/LibSerialize.lua:695:0 (19,527 Bytes, 0.05%)</title><rect x="658.1" y="117" width="0.8" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="661.14" y="127.5" ></text>
+</g>
+<g >
+<title>atributo_heal:RefreshWindow Details/classes/classe_heal.lua:196:0 (76,728 Bytes, 0.19%)</title><rect x="188.9" y="437" width="3.0" height="15.0" fill="rgb(223,85,20)" rx="2" ry="2" />
+<text  x="191.91" y="447.5" ></text>
+</g>
+<g >
+<title>timer.callback CharacterNotes/Libs/AceTimer-3.0/AceTimer-3.0.lua:50:18 (172,539 Bytes, 0.42%)</title><rect x="188.9" y="485" width="6.7" height="15.0" fill="rgb(229,114,27)" rx="2" ry="2" />
+<text  x="191.91" y="495.5" ></text>
+</g>
+<g >
+<title>CreateReader Auctionator/Libs/LibSerialize/LibSerialize.lua:490:6 (4,320 Bytes, 0.01%)</title><rect x="669.9" y="357" width="0.2" height="15.0" fill="rgb(219,68,16)" rx="2" ry="2" />
+<text  x="672.91" y="367.5" ></text>
+</g>
+<g >
+<title>NotesDB:GetNote CharacterNotes/NotesDB.lua:107:0 (119,634 Bytes, 0.29%)</title><rect x="27.8" y="437" width="4.6" height="15.0" fill="rgb(226,99,23)" rx="2" ry="2" />
+<text  x="30.83" y="447.5" ></text>
+</g>
+<g >
+<title>LibSerialize:DeserializeValue Auctionator/Libs/LibSerialize/LibSerialize.lua:1301:0 (30,466 Bytes, 0.07%)</title><rect x="657.7" y="357" width="1.2" height="15.0" fill="rgb(237,150,35)" rx="2" ry="2" />
+<text  x="660.73" y="367.5" ></text>
+</g>
+<g >
+<title>cacheUserInventory TacoTip/Libs/LibClassicInspector/LibClassicInspector.lua:2834:6 (212,560 Bytes, 0.52%)</title><rect x="1003.8" y="453" width="8.2" height="15.0" fill="rgb(239,159,38)" rx="2" ry="2" />
+<text  x="1006.76" y="463.5" ></text>
+</g>
+<g >
+<title>LibSerialize:_ReadObject Auctionator/Libs/LibSerialize/LibSerialize.lua:655:0 (29,650 Bytes, 0.07%)</title><rect x="657.8" y="341" width="1.1" height="15.0" fill="rgb(221,77,18)" rx="2" ry="2" />
+<text  x="660.77" y="351.5" ></text>
+</g>
+<g >
+<title>LibSerialize:_ReadObject Auctionator/Libs/LibSerialize/LibSerialize.lua:655:0 (29,386 Bytes, 0.07%)</title><rect x="657.8" y="277" width="1.1" height="15.0" fill="rgb(221,77,18)" rx="2" ry="2" />
+<text  x="660.78" y="287.5" ></text>
+</g>
+<g >
+<title>_detalhes:OnEvent Details/core/parser.lua:4886:1 (106,368 Bytes, 0.26%)</title><rect x="172.6" y="485" width="4.1" height="15.0" fill="rgb(229,110,26)" rx="2" ry="2" />
+<text  x="175.57" y="495.5" ></text>
+</g>
+</g>
+</svg>
