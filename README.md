@@ -114,7 +114,12 @@ For example, the following command generates a [graph that excludes ClassicHealP
 
 ## How accurate is it?
 
-Within a few percent vs. the old builtin profiler, see [Accuracy.md](./Accuracy.md) for measurements and details.
+See [Accuracy.md](./Accuracy.md) for measurements and details.
+
+The tl;dr is that it's accurate within a few percent with one exception:
+non-trivial return expressions (anything not returning just locals or literals) introduce a small systematic error.
+On my system that seems to be about 300 ns per such return.
+This is not relevant in absolute terms for real-world usage, but it can lead to a large relative error for small functions -- in the example above there is a small leaf function that looks 22% larger than it actually is.
 
 ## What about the default UI/Blizzard AddOns?
 
@@ -143,7 +148,8 @@ These negative events seem to be following the same distribution as normal event
 
 Measuring performance will always affect performance, this is especially true for profilers based on instrumentation.
 Perfy adds around 1 µs of overhead (on my Ryzen 7800X3D) and 432 byte of memory allocations to every function call (two trace entries).
-This overhead is accounted for separately and subtracted during analysis, so the overall measurement results are probably still pretty accurate.
+This overhead is accounted for separately and subtracted during analysis, so the overall measurement results are still pretty accurate.
+See [Accuracy.md](./Accuracy.md) for measurements and details. 
 
 ## What about dynamically loaded code?
 

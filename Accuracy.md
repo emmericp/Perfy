@@ -47,10 +47,10 @@ Each run was repeated 5 times, the table shows the average and standard deviatio
 | `stringFromTimer`     |               24465 ± 0.9% |           29985 ± 0.8% |      22.6%  |
 | `AnimateEnlarge`      |                2916 ± 1.8% |            2992 ± 1.2% |       2.5%  |
 
-Perfy tends to report a slightly higher CPU usage -- getting an exact match between the two results was not the goal here.
-Neither Perfy nor the builtin profiler are perfect, I'm happy that these agree to within a few percent.
+Perfy tends to report a slightly higher CPU usage -- this is expected because even with all the logic to account for overhead it will still at least add the cost of one function call (to `Perfy_GetTime()`) to each function.
+Neither Perfy nor the builtin profiler are perfect, I'm happy that these agree to within a few percent :)
 
-Two results are a bit odd an warrant further investigation (TODO):
+Two results are a bit odd an warrant further investigation:
 
 
 ### DBT:UpdateBars() is reported lower instead of higher
@@ -77,10 +77,41 @@ local function stringFromTimer(t)
 end
 ```
 
-Two hypotheses to follow up on:
+The problem here is are the tail calls to `string.format`, the function is instrumented as follows:
 
-1. Perfy's accounting of overhead when tracing a tail call is slightly off -- it doesn't correctly attribute the function call into Perfy as overhead (see the implementation of `Perfy_Trace_Leave` in the AddOn for why this is the case).
+```
+local function stringFromTimer(t) Perfy_Trace(Perfy_GetTime(), "Enter", "stringFromTimer")
+	if t <= DBT.Options.TDecimal then
+		return Perfy_Trace_Leave("Leave", "stringFromTimer", ("%.1f"):format(t))
+	elseif t <= 60 then
+		return Perfy_Trace_Leave("Leave", "stringFromTimer", ("%d"):format(t))
+	else
+		return Perfy_Trace_Leave("Leave", "stringFromTimer", ("%d:%0.2d"):format(t / 60, math.fmod(t, 60)))
+	end
+end
+```
 
-2. Perfy sees this is a single leaf function. The builtin profiler accounts for `string.format` and `math.fmod` separately, maybe this is related.
+`Perfy_Trace_Leave` wraps the original return expression and returns it again, that allows us to inject a tracepoint between the evaluation of the return expression and the actual return.
+But unlike `Perfy_Trace` at the beginning of the function it can't contain a call to `Perfy_GetTime()` to determine when the return is happening -- this is instead done inside Perfy.
+That means the time it takes to call into Perfy is incorrectly attributed to `stringFromTimer` and cannot be subtracted by the analysis script.
+`stringFromTimer` has a discrepancy of 5520 µs vs. our reference, it is called 16010 times in the trace, so that's 0.345 µs of error per call.
 
+Unfortunately I don't think this is fixable for the general case:
+we would need to add the `Perfy_GetTime()` call to the end of the expression list to make sure it is evaluated after all return expressions, but the last expression can return a vararg of unknown length, so we can't just add it.
 
+I validated this by rewriting all return points in `stringFromTimer` as follows
+
+```
+local res = (""):format(t)
+Perfy_Trace(Perfy_GetTime(), "Leave", "stringFromTimer")
+return res
+```
+
+Perfy now reports only 27175 µs of total time (it got faster) for this function and the builtin profiler reports 26588 µs (it got slower) when changing from a tail call to an intermediate variable.
+That's a discrepancy of only 2.2% and in line with other functions.
+
+### Conclusion
+
+Overall it's pretty accurate, especially when looking at the big picture.
+Note how the error for functions with tail calls is only large when looking at the relative error of a small function.
+The absolute error is on the order of hundreds of nanoseconds per function call.
