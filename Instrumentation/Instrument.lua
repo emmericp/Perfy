@@ -113,20 +113,42 @@ function mod:InstrumentFunctions(state, argFunc, injections)
 			}
 		end
 		if node.returns then
-			for k, v in pairs(node.returns) do
-				if #v > 0 then
+			for k, ret in pairs(node.returns) do
+				-- Two ways to instrument returns:
+				-- 1. return Perfy_Trace_Passthrough("Leave", ...)
+				-- 2. Perfy_Trace(Perfy_GetTime(), "Leave") return ...
+				-- Neither of them is perfect
+				-- (1) Samples the current time inside Perfy, i.e., the time to call into Perfy is incorrectly accounted to the calling function, see Accuracy.md for how this can skew small functions.
+				-- (2) Samples the current time before evaluating the return expression, this means the time for the return expression is accounted to the calling function.
+				-- Neither is perfect, the logic below picks (2) if the return expressions are deemed trivial (constants or locals) and (1) otherwise.
+				-- We could expand what we consider trivial (e.g., are closure creations trivial? are things like binary_op(local, literal) trivial?).
+				-- But the fundamental problem is unsolvable in a source-to-source translation: we can't capture the time between calling into Perfy but immediately before returning in the general case.
+				-- The reason are tail calls that can return varargs: "return foo()" can't be translated to "return Perfy_Trace_Passthrough("Leave", foo(), Perfy_GetTime())" (and time sampling needs to be last, args are evaluated left-to-right).
+				-- One potential improvement would be having tracer functions for known number of return parameters, e.g. return foo(), 5 could be translated to Perfy_Trace_Passthrough2("Leave", foo(), 5, GetTime()).
+				-- But that'd either be an injected getglobal (but correctly accounted for) or an extra variable (and the 200 local limit is already triggering on a few files).
+				local returnHasNonTrivialExpression = false
+				for i, v in ipairs(ret) do
+					while v.type == "paren" do
+						v = v.exp
+					end
+					if v.type ~= "getlocal" and v.type ~= "string" and v.type ~= "boolean" and v.type ~= "nil" and v.type ~= "number" and v.type ~= "integer" then
+						returnHasNonTrivialExpression = true
+						break
+					end
+				end
+				if returnHasNonTrivialExpression then
 					injections[#injections + 1] = {
-						pos = v[1].start,
-						text = "Perfy_Trace_Leave(" .. table.concat(passthroughLeaveArgs, ", ") .. ","
+						pos = ret[1].start,
+						text = "Perfy_Trace_Passthrough(" .. table.concat(passthroughLeaveArgs, ", ") .. ","
 					}
 					injections[#injections + 1] = {
-						pos = v[#v].finish,
+						pos = ret[#ret].finish,
 						text = ")",
 						skipPrepadding = true
 					}
 				else
 					injections[#injections + 1] = {
-						pos = v.start,
+						pos = ret.start,
 						text = "Perfy_Trace(" .. table.concat(leaveArgs, ", ") .. ");"
 					}
 				end
@@ -146,7 +168,7 @@ function mod:Instrument(code, fileName, retryAfterLocalLimitExceeded)
 	---@type Injection[]
 	local injections = {}
 	if not retryAfterLocalLimitExceeded then
-		injections[#injections + 1] = {pos = 0, text = perfyTag .. " local Perfy_GetTime, Perfy_Trace, Perfy_Trace_Leave = Perfy_GetTime, Perfy_Trace, Perfy_Trace_Leave;"}
+		injections[#injections + 1] = {pos = 0, text = perfyTag .. " local Perfy_GetTime, Perfy_Trace, Perfy_Trace_Passthrough = Perfy_GetTime, Perfy_Trace, Perfy_Trace_Passthrough;"}
 	else
 		print("File " .. fileName .. " hit > 200 local variables at line " .. splitPos(retryAfterLocalLimitExceeded.start) .. " after injecting. Skipping local cache, Perfy's overhead for this file will be higher.")
 		injections[#injections + 1] = {pos = 0, text = perfyTag}

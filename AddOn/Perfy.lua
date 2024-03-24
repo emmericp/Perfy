@@ -23,7 +23,7 @@ function Perfy_Trace(timestamp, event, func)
 end
 
 -- Trace function when leaving functions, arguments are passed through, required to instrument tail calls.
-function Perfy_Trace_Leave(event, func, ...)
+function Perfy_Trace_Passthrough(event, func, ...)
 	-- Timestamp taken here instead of in args because it must be done after all args are evaluated.
 	-- Lua evaluates args left to right and vararg tail call reports mean we can't put it as last arg.
 	local timestamp = Perfy_GetTime()
