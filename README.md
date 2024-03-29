@@ -79,8 +79,10 @@ You can also run just `/perfy` to toggle it.
 
 **Keep measurement times short, this is not something that can run continously.**
 Short means a few minutes depending on the load and number of instrumented AddOns.
-The main bottleneck is memory, it needs a few hundred MB per minute with my UI during a Gnomeregan boss fight.
-Perfy regularly reports how many events it already gathered, as a rule of thumb you shouldn't exceed a few million trace events and a few gigabytes of memory.
+The main bottleneck is memory, it needs an average of 240 bytes per trace entry (`216 * #entries + 2^ceil(log_2(#entries)) * 24` bytes to be exact) and the whole UI will leak memory/accumulate garbage since tracing disables garbage collection.
+With my personal UI setup this adds up to about 100-200 MB per minute during a Gnomeregan boss fight.
+
+Perfy regularly reports how many events it already gathered, as a rule of thumb you shouldn't exceed 10 to 20 million trace entries and a few gigabytes of memory.
 Tracing a whole boss fight should be fine, but a whole raid night is definitely not feasible (nor would it be useful).
 
 ## Analyze
@@ -148,7 +150,7 @@ These negative events seem to be following the same distribution as normal event
 ## No fair, you changed the outcome by measuring it!
 
 Measuring performance will always affect performance, this is especially true for profilers based on instrumentation.
-Perfy adds around 1 µs of overhead (on my Ryzen 7800X3D) and 432 byte of memory allocations to every function call (two trace entries).
+Perfy adds around 1 µs of overhead (on my Ryzen 7800X3D) and 480 bytes of memory allocations to every function call (two trace entries).
 This overhead is accounted for separately and subtracted during analysis, so the overall measurement results are still pretty accurate.
 See [Accuracy.md](./Accuracy.md) for measurements and details. 
 
@@ -175,3 +177,8 @@ This is also the reason why a newer Lua version is required for the Analysis scr
 
 This error can be ignored since we don't want to read back the data anyways.
 But unfortunately we can't surpress it.
+
+## Any other known limitations?
+
+1. Lua code directly embedded in XML files is currently not instrumented.
+2. Files with lines longer than 10000 characters can cause problems during instrumentation.
