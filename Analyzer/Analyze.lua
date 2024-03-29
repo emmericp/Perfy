@@ -55,7 +55,7 @@ local function parseStackEntry(str)
 	return result
 end
 
-local function backtrace(stack)
+local function backtrace(stack, coroutine)
 	if #stack == 0 then return "" end
 	local bt = {}
 	local addonAssociation
@@ -74,28 +74,41 @@ local function backtrace(stack)
 	-- For self-times of something like libcallback we could associate this based on a lookahead on the trace, but these seem to be small/irrelevant anyways.
 	addonAssociation = addonAssociation or parseStackEntry(stack[1].functionName)
 	addonAssociation = addonAssociation or "Unknown addon"
-	return addonAssociation .. (#bt > 0 and ";" or "") .. table.concat(bt, ";")
+	local stackPreamble = {addonAssociation}
+	if coroutine.firstResume then
+		stackPreamble[#stackPreamble + 1] = coroutine.firstResume
+	end
+	return table.concat(stackPreamble, ";") .. (#stackPreamble > 0 and ";" or "") .. table.concat(bt, ";")
 end
 
+---@param trace TraceEntry[]
 function mod:FlameGraph(trace, field, overheadField)
 	field = field or "timestamp"
 	overheadField = overheadField or "timeOverhead"
-	---@type TraceEntry[]
-	local stack = {}
 	local result = {}
+	local eventWarningsShown = {}
+	---@type table<string, {stack: TraceEntry[], firstResume: string?}>
+	local coroutines = {
+		main = {stack = {}}
+	}
+	---@type string[]
+	local currentCoroutine = {"main"}
+	local stack = coroutines.main.stack
 	for i, v in ipairs(trace) do
 		local prev = trace[i - 1]
 		local delta = prev and v[field] - prev[field] - prev[overheadField]
-		local bt = backtrace(stack)
+		local activeCoroutine = coroutines[currentCoroutine[#currentCoroutine]]
+		local bt = backtrace(stack, activeCoroutine)
 		if v.event == "Enter" then
 			if #stack > 0 and delta > 0 then
 				result[bt] = (result[bt] or 0) + delta
 			end
 			stack[#stack + 1] = v
 		elseif v.event == "Leave" then
-			if #stack < 1 then
-				 -- TODO: coroutines can trigger this, just pretend the corresponding leave event didn't exist
-				print("stack underflow at " .. i)
+			if #stack == 0 then
+				 -- incomplete traces of coroutines can trigger this
+				bt = backtrace({v, {functionName = "(missing stack information due coroutine or pcall: underflow)"}}, activeCoroutine)
+				result[bt] = (result[bt] or 0) + delta
 			else
 				local top = stack[#stack]
 				if top.functionName == v.functionName then
@@ -103,30 +116,57 @@ function mod:FlameGraph(trace, field, overheadField)
 						result[bt] = (result[bt] or 0) + delta
 					end
 					stack[#stack] = nil
+					if #stack == 0 and #currentCoroutine > 1 then
+						-- We are either leaving a coroutine or the start of a coroutine was not traced
+						currentCoroutine[#currentCoroutine] = nil
+						stack = coroutines[currentCoroutine[#currentCoroutine]].stack
+					end
 				else
-					-- TODO: i'm not sure about correctness here, especially wrt coroutines
-					-- this is just to make it not fail completely if it encounteres a coroutine or pcall
 					print("bad stack (likely coroutines or pcall/error) at " .. i .. ": leaving " .. v.functionName .. " after entering " .. top.functionName .. " backtrace: " .. bt .. " results for this stack will be off")
 					while top and top.functionName ~= v.functionName do
 						stack[#stack] = nil
 						top = stack[#stack]
 					end
-					if top then
-						bt = backtrace(stack) .. ";(missing stack information due coroutine or pcall)"
-						if delta > 0 then
-							result[bt] = (result[bt] or 0) + delta
-						end
-						stack[#stack] = nil
+					bt = backtrace({v, {functionName = "(missing stack information due coroutine or pcall: stack mismatch)"}}, activeCoroutine)
+					if delta > 0 then
+						result[bt] = (result[bt] or 0) + delta
 					end
+					stack[#stack] = nil
 				end
 			end
-		elseif v.event == "UncaughtError" then
+		elseif v.event == "CoroutineResume" then
+			if delta > 0 then
+				result[bt] = (result[bt] or 0) + delta
+			end
+			coroutines[v.functionName] = coroutines[v.functionName] or {stack = {}}
+			if #stack > 0 then
+				coroutines[v.functionName].firstResume = coroutines[v.functionName].firstResume or stack[#stack].functionName
+			end
+			currentCoroutine[#currentCoroutine + 1] = v.functionName
+			stack = coroutines[v.functionName].stack
+		elseif v.event == "CoroutineYield" then
+			if delta > 0 then
+				result[bt] = (result[bt] or 0) + delta
+			end
+			if #currentCoroutine <= 1 then -- yielding from main
+				print("coroutine stack underflow at " .. i .. " in " .. (#stack > 0 and stack[#stack].functionName or "(unknown function)") .. " likely missing the start of a coroutine in a trace")
+			else
+				currentCoroutine[#currentCoroutine] = nil
+				stack = coroutines[currentCoroutine[#currentCoroutine]].stack
+			end
+		elseif v.event == "UncaughtError" then -- FIXME: this has 0% test coverage
 			if #stack > 0 and delta > 0 then
 				result[bt] = (result[bt] or 0) + delta
 			end
-			stack = {}
+			for _, coroutine in ipairs(currentCoroutine) do
+				coroutines[coroutine].stack = {}
+			end
+			currentCoroutine = {"main"}
 		else
-			error("unknown event: " .. tostring(v.event))
+			if not eventWarningsShown[v.event] then
+				print(("unknown event at entry %d: %s"):format(i, v.event))
+			end
+			eventWarningsShown[v.event] = true
 		end
 	end
 	local multiplier = field == "timestamp" and 1e6 or 1

@@ -158,7 +158,9 @@ Will be accounted to the function that calls it.
 
 ## What about coroutines?
 
-Poorly supported, some time/memory will be missing in the result for functions using coroutines and you will see some warnings when running the analyzer script.
+Perfy keeps track of the call stack for each coroutine by hooking the coroutine functions.
+Coroutines are accounted to the first function that calls `coroutine.resume()` on them.
+Coroutines that are already running when tracing is started will trigger some warnings about failed stack reconstruction and you may see some partial stacks, but in general they are well supported.
 
 ## What about pcall?
 

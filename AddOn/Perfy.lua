@@ -64,6 +64,30 @@ local function Perfy_Trace_Passthrough(event, func, ...)
 end
 _G.Perfy_Trace_Passthrough = Perfy_Trace_Passthrough
 
+-- Hook coroutines
+local crWrap, crResume, crYield, crRunning = coroutine.wrap, coroutine.resume, coroutine.yield, coroutine.running
+
+---@diagnostic disable-next-line: duplicate-set-field
+function coroutine.wrap(f)
+	local cr = crWrap(f)
+	return function(...)
+		Perfy_Trace(Perfy_GetTime(), "CoroutineResume", cr)
+		return cr(...)
+	end
+end
+
+---@diagnostic disable-next-line: duplicate-set-field
+function coroutine.resume(coroutine, ...)
+	Perfy_Trace(Perfy_GetTime(), "CoroutineResume", coroutine)
+	return crResume(coroutine, ...)
+end
+
+---@diagnostic disable-next-line: duplicate-set-field
+function coroutine.yield(...)
+	Perfy_Trace(Perfy_GetTime(), "CoroutineYield", crRunning())
+	return crYield(...)
+end
+
 
 -- Hook error handlers
 local origErrorHandler
@@ -112,6 +136,9 @@ local function export()
 			print(("[Perfy] Exporting... %d%%"):format(math.ceil(i / numEntries * 10) * 10))
 		end
 		local eventName, funcName = event[TraceFieldEvent], event[TraceFieldFunction]
+		if type(funcName) == "thread" or type(funcName) == "function" then
+			funcName = tostring(funcName)
+		end
 		if type(funcName) == "string" then -- Avoid translating functions twice if we log multiple times
 			if not eventNames[eventName] then
 				eventNames[eventName] = eventId
