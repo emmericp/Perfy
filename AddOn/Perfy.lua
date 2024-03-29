@@ -6,14 +6,37 @@ local gc = collectgarbage
 ---@type table<number, string|number, string|number, number, number?, number?>[]
 local trace = {}
 
+local TraceFieldTimestamp, TraceFieldEvent, TraceFieldFunction, TraceFieldTimeOverhead, TraceFieldMemory, TraceFieldMemoryOverhead = 1, 2, 3, 4, 5, 6
+
 local isRunning
 
+--[[
+A few notes on the performance of the trace functions:
+These are the priorities for them:
+ 1. It needs to be accurate and correct, so it should call GetTimePreciseSec() as close as possible to the beginning and end of it
+ 2. The main bottleneck is memory, so it should allocate as little as possible
+ 3. It should be as fast as possible to keep overhead low (even when overhead is accounted for, we don't want to slow down anything unnecessarily)
+
+Random notes and thoughts:
+ * The entry should be allocated via a single table expression, this gives an array of exact size of n entries. Growing the array after allocation grows it exponentially.
+   6 entries allocated directly is (216 byte), growing an array to 6 entries allocates 8 internally in 264 bytes. That's 22% more.
+ * Strings are interned and don't use extra memory if used multiple times
+ * Traces can be a few GB large before you run into problems
+ * Using number literals to index the entry because it's slightly faster than referencing an upvalue
+
+Collection of ideas to maybe try:
+ * Delta-encode entries and "compress" them to reduce the number of fields. (Probably doesn't work for the overhead fields)
+ * Should we pre-allocate a large array for trace entries? The exponential growth will trigger huge reallocations O(log n) times
+ * If we preallocate the trace array we don't need to store the memory overhead per entry as growing the array is the only reason why it's not constant
+   * Even without preallocation we should be able to omit the memory overhead because the reallocation every 2^n entries should be deterministic
+]]
+
+
 -- Generic trace function, timestamp taken before it is called.
-function Perfy_Trace(timestamp, event, func)
+local function Perfy_Trace(timestamp, event, func)
 	if not isRunning then return end
-	local entry
 	local mem = gc("count") * 1024
-	entry = {
+	local entry = {
 		timestamp, event, func, 0, mem, mem
 	}
 	trace[#trace + 1] = entry
@@ -21,16 +44,16 @@ function Perfy_Trace(timestamp, event, func)
 	entry[6] = mem - entry[6] -- Memory overhead
 	entry[4] = Perfy_GetTime() - timestamp -- Time overhead
 end
+_G.Perfy_Trace = Perfy_Trace
 
 -- Trace function when leaving functions, arguments are passed through, required to instrument tail calls.
-function Perfy_Trace_Passthrough(event, func, ...)
+local function Perfy_Trace_Passthrough(event, func, ...)
 	-- Timestamp taken here instead of in args because it must be done after all args are evaluated.
 	-- Lua evaluates args left to right and vararg tail call reports mean we can't put it as last arg.
 	local timestamp = Perfy_GetTime()
 	if not isRunning then return ... end
-	local entry
 	local mem = gc("count") * 1024
-	entry = {
+	local entry = {
 		timestamp, event, func, 0, mem, mem
 	}
 	trace[#trace + 1] = entry
@@ -39,11 +62,14 @@ function Perfy_Trace_Passthrough(event, func, ...)
 	entry[4] = Perfy_GetTime() - timestamp -- Time overhead
 	return ...
 end
+_G.Perfy_Trace_Passthrough = Perfy_Trace_Passthrough
 
+
+-- Hook error handlers
 local origErrorHandler
 local function errorHandler(...)
 	if isRunning then
-		Perfy_Trace(Perfy_GetTime(), "UncaughtError", "Internal")
+		Perfy_Trace(Perfy_GetTime(), "UncaughtError", debugstack())
 	end
 	return origErrorHandler(...)
 end
@@ -72,7 +98,7 @@ local type = type
 local funcId, eventId = 1, 1
 local function export()
 	-- Mapping all strings to numbers makes the saved variables file a bit smaller.
-	-- (But it doesn't save significant memory because strings are interned/unique anyways, so logging the full string above is fine)
+	-- This doesn't save memory (actually increases memory to store the lookup tables) because strings are interned/unique anyways, so logging the full string above is fine.
 	local functionNames = Perfy_Export and Perfy_Export.FunctionNames or {}
 	local eventNames = Perfy_Export and Perfy_Export.EventNames or {}
 	local numEntries = #trace
@@ -85,7 +111,7 @@ local function export()
 		if #trace > 1e6 and i % printInterval == 0 then
 			print(("[Perfy] Exporting... %d%%"):format(math.ceil(i / numEntries * 10) * 10))
 		end
-		local eventName, funcName = event[2], event[3]
+		local eventName, funcName = event[TraceFieldEvent], event[TraceFieldFunction]
 		if type(funcName) == "string" then -- Avoid translating functions twice if we log multiple times
 			if not eventNames[eventName] then
 				eventNames[eventName] = eventId
@@ -95,7 +121,7 @@ local function export()
 				functionNames[funcName] = funcId
 				funcId = funcId + 1
 			end
-			event[2], event[3] = eventNames[eventName], functionNames[funcName]
+			event[TraceFieldEvent], event[TraceFieldFunction] = eventNames[eventName], functionNames[funcName]
 		end
 	end
 	coroutine.yield() -- I've observed slow writes to very large exported variables, so yield one last time.
@@ -112,6 +138,7 @@ local function export()
 end
 
 function Perfy_Stop()
+	if not isRunning then return end
 	isRunning = false
 	printStats()
 	local thread = coroutine.create(export)
@@ -123,6 +150,7 @@ function Perfy_Stop()
 		end)
 	end
 	runCoroutine()
+	-- GC is restarted after exporting above
 end
 
 function Perfy_Start(timeout)
