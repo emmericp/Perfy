@@ -43,7 +43,7 @@ Each run was repeated 5 times, the table shows the average and standard deviatio
 |-----------------------|---------------------------:|-----------------------:|------------:|
 | `onUpdate`            |              273740 ± 0.5% |          282690 ± 0.3% |       3.3%  |
 | `barPrototype:Update` |              260560 ± 0.6% |          265522 ± 0.3% |       1.9%  |
-| `DBT:UpdateBars`      |               98564 ± 0.7% |           94413 ± 1.2% |       4.4%  |
+| `DBT:UpdateBars`      |               98564 ± 0.7% |           94413 ± 1.2% |      -4.2%  |
 | `stringFromTimer`     |               24465 ± 0.9% |           29985 ± 0.8% |      22.6%  |
 | `AnimateEnlarge`      |                2916 ± 1.8% |            2992 ± 1.2% |       2.5%  |
 
@@ -53,13 +53,16 @@ Neither Perfy nor the builtin profiler are perfect, I'm happy that these agree t
 Two results are a bit odd an warrant further investigation:
 
 
-### DBT:UpdateBars() is reported lower instead of higher
+### DBT:UpdateBars() is reports a lower time, everything else reports a higher time
 
-For `DBT:UpdateBars` Perfy reports a lower utilization whereas it reports a higher utilization everywhere else.
-My first guess was that this is somehow related to the usage of `table.sort`, but the comparison functions are only called a total of 82 times with a runtime of 314 µs including overhead (19 µs excluding overhead).
+This is because the most commonly executed path in the function is just a tight loop calling some WoW API functions.
+Perfy does not add extra overhead to these functions -- but the builtin profiler does.
+This can be validated by running Perfy with and without the builtin profiler enabled: it adds 11% overhead to this function.
+For other functions such as `stringFromTimer` or `AnimateEnlarge` it only adds 3% and 5% respectively.
 
-TODO: Investigate more.
-Another hypothesis is that this is related to this function can show up multiple times in a stack trace, maybe the logic to calculate total time is wrong in either Perfy or the builtin profiler.
+This means it's not Perfy that is wrong here but the builtin profiler.
+Again, neither of these is perfect.
+
 
 ### stringFromTimer() has a 22% discrepancy
 
