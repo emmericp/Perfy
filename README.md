@@ -68,13 +68,14 @@ If uninstrumented AddOns use shared libraries from instrumented AddOns there may
 Install the WoW AddOn in `AddOn/` as `AddOns/Perfy` and start measuring in game as follows:
 
 ```
-/run Perfy_Start()
-/run Perfy_Stop()
+/perfy start
+/perfy stop
 ```
 
 Reload your UI or log out afterwards to make WoW export the data.
 
-`Perfy_Start(runtime)` also takes an optional parameter for runtime in seconds to stop it automatically.
+`/perfy start <time>` also takes an optional parameter for runtime in seconds to stop it automatically.
+You can also run just `/perfy` to toggle it.
 
 **Keep measurement times short, this is not something that can run continously.**
 Short means a few minutes depending on the load and number of instrumented AddOns.

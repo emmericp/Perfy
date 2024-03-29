@@ -151,3 +151,7 @@ function Perfy_Clear()
 	funcId = 1
 	eventId = 1
 end
+
+function Perfy_Running()
+	return isRunning
+end

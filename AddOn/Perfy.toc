@@ -6,3 +6,4 @@
 ## SavedVariables: Perfy_Export
 
 Perfy.lua
+CLI.lua
