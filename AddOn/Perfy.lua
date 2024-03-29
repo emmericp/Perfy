@@ -129,7 +129,7 @@ local function export()
 	local yieldInterval = 1e5 -- Large traces have ~millions of entries
 	local printInterval = math.floor(numEntries / 10)
 	for i, event in ipairs(trace) do
-		if i % yieldInterval == 0 then
+		if i % yieldInterval == 0 and coroutine.running() then
 			coroutine.yield()
 		end
 		if #trace > 1e6 and i % printInterval == 0 then
@@ -151,7 +151,9 @@ local function export()
 			event[TraceFieldEvent], event[TraceFieldFunction] = eventNames[eventName], functionNames[funcName]
 		end
 	end
-	coroutine.yield() -- I've observed slow writes to very large exported variables, so yield one last time.
+	if coroutine.running() then
+		coroutine.yield() -- I've observed slow writes to very large exported variables, so yield one last time.
+	end
 	Perfy_Export = {
 		FunctionNames = functionNames,
 		EventNames = eventNames,
@@ -160,7 +162,9 @@ local function export()
 	print(("[Perfy] Saved %d trace entries across %d unique functions."):format(#trace, funcId - 1))
 	-- Delay restarting gc because the freshly restarted gc will trigger a lot when allocating for building the lookup tables above.
 	-- This avoids several seconds of runtime here and reduces the risk of running into a timeout which corrupts the exported data 
-	coroutine.yield()
+	if coroutine.running() then
+		coroutine.yield()
+	end
 	gc("restart")
 end
 
@@ -180,10 +184,21 @@ function Perfy_Stop()
 	-- GC is restarted after exporting above
 end
 
+-- Reloading/logging out while Perfy is running is a bad idea because it either doesn't generate a trace at all (started only once) or generates a broken trace (started multiple times)
+-- Just try to stop it, but this may run into a timeout for a large trace because we can't run it in a coroutine at this point in time.
+local stopFrame = CreateFrame("Frame")
+stopFrame:RegisterEvent("ADDONS_UNLOADING")
+stopFrame:SetScript("OnEvent", function()
+	if isRunning then
+		isRunning = false
+		export()
+	end
+end)
+
 function Perfy_Start(timeout)
 	if #trace == 0 then
 		-- Make sure we don't accidentally import old saved variables
-		Perfy_Clear()
+		Perfy_Clear(true)
 	end
 	gc("stop")
 	hookErrorHandler()
@@ -200,13 +215,36 @@ function Perfy_Start(timeout)
 	end)
 end
 
-function Perfy_Clear()
+function Perfy_Clear(quiet)
+	if not quiet then
+		print("[Perfy] Discarding " .. #trace .. " trace entries.")
+	end
+	isRunning = false
 	trace = {}
 	Perfy_Export = {}
 	funcId = 1
 	eventId = 1
+	gc("restart")
 end
 
 function Perfy_Running()
 	return isRunning
 end
+
+-- Log some events for loading screens and some that are useful for general debugging
+local frame = CreateFrame("Frame", "Perfy")
+frame:SetScript("OnUpdate", function()
+	Perfy_Trace(Perfy_GetTime(), "OnEvent", "OnUpdate")
+end)
+frame:SetScript("OnEvent", function(_, event, arg1)
+	Perfy_Trace(Perfy_GetTime(), "OnEvent", event .. " " .. tostring(arg1))
+end)
+frame:RegisterEvent("ADDON_LOADED")
+frame:RegisterEvent("LOADING_SCREEN_DISABLED")
+frame:RegisterEvent("LOADING_SCREEN_ENABLED")
+frame:RegisterEvent("PLAYER_ENTERING_WORLD")
+frame:RegisterEvent("PLAYER_LEAVING_WORLD")
+frame:RegisterEvent("PLAYER_LOGIN")
+frame:RegisterEvent("PLAYER_LOGOUT")
+frame:RegisterEvent("SPELLS_CHANGED")
+frame:Show()

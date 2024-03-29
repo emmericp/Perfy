@@ -65,7 +65,7 @@ If uninstrumented AddOns use shared libraries from instrumented AddOns there may
 
 ## Measure
 
-Install the WoW AddOn in `AddOn/` as `AddOns/Perfy` and start measuring in game as follows:
+Install the WoW AddOn in `AddOn/` as `AddOns/!!!Perfy` and start measuring in game as follows:
 
 ```
 /perfy start

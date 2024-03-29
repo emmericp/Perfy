@@ -1,6 +1,6 @@
 SlashCmdList = {}
 
-local running, runtime, cleared
+local running, runtime, cleared, logLoadingScreen
 function Perfy_Start(time)
 	running = true
 	runtime = time
@@ -19,8 +19,12 @@ function Perfy_Clear()
 	cleared = true
 end
 
+function Perfy_LogLoadingScreen()
+	logLoadingScreen = true
+end
+
 local function reset()
-	running, runtime, cleared = nil, nil, nil
+	running, runtime, cleared, logLoadingScreen = nil, nil, nil, nil
 end
 
 require "CLI"
@@ -57,6 +61,13 @@ assert(running)
 assert(runtime == 10)
 SlashCmdList.PERFY("")
 assert(not running)
+
+reset()
+SlashCmdList.PERFY("ls")
+assert(logLoadingScreen)
+reset()
+SlashCmdList.PERFY("loadingscreen")
+assert(logLoadingScreen)
 
 reset()
 SlashCmdList.PERFY("foo")

@@ -13,9 +13,9 @@ end
 local utf8Bom = "\xef\xbb\xbf"
 
 local function injectLine(line, inj, offs)
-	local _, injPos = splitPos(inj.pos)
+	local _, injPos = splitPos(inj.pos < math.huge and inj.pos or 0)
 	injPos = injPos + offs
-	local prePadding = not inj.skipPrepadding and injPos > 0 and line:sub(injPos, injPos):match("[^%s]") and line:sub(0, injPos) ~= utf8Bom and " " or ""
+	local prePadding = not inj.skipPrepadding and injPos > 0 and not inj.text:match("^%s") and line:sub(injPos, injPos):match("[^%s]") and line:sub(0, injPos) ~= utf8Bom and " " or ""
 	local postPadding = injPos < #line and line:sub(injPos + 1, injPos + 1):match("[^%s]") and " " or ""
 	local injText = prePadding .. inj.text .. postPadding
 	offs = offs + #injText
@@ -51,6 +51,13 @@ function mod:Inject(state, injections)
 		buf[#buf + 1] = line
 		last = v
 	end
+	-- End-of-file injections aren't in the loop above they refer to line infinity which doesn't exist, this is to avoid problems if the last line is > 10k characters long.
+	local suffix = ""
+	local offs = 0
+	for i = injIndex, #injections do
+		suffix, offs = injectLine(suffix, injections[i], offs)
+	end
+	buf[#buf + 1] = suffix
 	return buf
 end
 
@@ -62,6 +69,9 @@ end
 local function getFunctionName(node, fileName)
 	local line, pos = splitPos(node.start)
 	local parent = node.parent
+	if not parent then
+		return "(main chunk) " .. stripFilePrefix(fileName)
+	end
 	local name = "(anonymous)" ---@type string?
 	if parent.type == "setglobal" or parent.type == "setlocal" or parent.type == "local" then
 		name = guide.getKeyName(parent)
@@ -90,27 +100,39 @@ end
 ---@param state parser.state
 ---@param argFunc fun(action: string, funcName: string, node: parser.object, passthrough: boolean?): ...
 ---@param injections Injection[]?
-function mod:InstrumentFunctions(state, argFunc, injections)
+function mod:InstrumentFunctions(state, argFunc, injections, skipMainChunk)
 	-- Note on semicolons:
 	-- Normal trace injections need them to avoid the Lua grammar ambiguity for function call vs. new statement,
 	-- e.g., foo()\n(bar).x = 5 (which is a parser error without a semicolon at the end of the line).
-	-- Injections wrapping returns must not add a semicolon because a return must be the last statement in a block
-	-- and if there was already a semicolon we would introduce an additional emtpy statement which is invalid.
-	local injections = injections or {}
-	guide.eachSourceType(state.ast, "function", function(node)
+	-- Injections wrapping returns must not add a semicolon because we are replacing an expression, not a statement.
+	-- If we the return already has a semicolon we would generate "return foo();;" which is invalid because empty statements are invalid.
+	injections = injections or {}
+	guide.eachSourceTypes(state.ast, {"function", "main"}, function(node)
+		if node.type == "main" and skipMainChunk then return end
 		local funcName = getFunctionName(node, state.uri or "(unknown file)")
 		local enterArgs = argFunc and {argFunc("Enter", funcName, node)} or {}
 		local leaveArgs = argFunc and {argFunc("Leave", funcName, node)} or {}
 		local passthroughLeaveArgs = argFunc and {argFunc("Leave", funcName, node, true)} or {}
-		injections[#injections + 1] = {
-			pos = node.args.finish,
-			text = "Perfy_Trace(" .. table.concat(enterArgs, ", ") .. ");"
-		}
-		if not node[#node] or node[#node].type ~= "return" then
+		if node.type ~= "main" then
 			injections[#injections + 1] = {
-				pos = node.finish - 3,
-				text = "Perfy_Trace(" .. table.concat(leaveArgs, ", ") .. ");"
+				pos = node.args.finish,
+				text = "Perfy_Trace(" .. table.concat(enterArgs, ", ") .. ");"
 			}
+			if not node[#node] or node[#node].type ~= "return" then
+				injections[#injections + 1] = {
+					pos = node.finish - 3,
+					text = "Perfy_Trace(" .. table.concat(leaveArgs, ", ") .. ");"
+				}
+			end
+		else
+			-- Main chunk enter trace gets injected by file preamble.
+			-- Main implicit exit point is just the last line, but unlike functions we don't have an "end" token here, so we need a newline to avoid conflicts with trailing comments
+			if not node[#node] or node[#node].type ~= "return" then
+				injections[#injections + 1] = {
+					pos = math.huge, -- Don't use node.finish here, it will fail if the last line is longer than 10k characters
+					text = "\nPerfy_Trace(" .. table.concat(leaveArgs, ", ") .. ");"
+				}
+			end
 		end
 		if node.returns then
 			for k, ret in pairs(node.returns) do
@@ -165,13 +187,15 @@ function mod:Instrument(code, fileName, retryAfterLocalLimitExceeded)
 	end
 	local state = parser.compile(code, "Lua", "Lua 5.1")
 	state.uri = "file://" .. fileName
+	local perfyEnterFile = (" Perfy_Trace(Perfy_GetTime(), %q, %q);"):format("Enter", getFunctionName(state.ast, state.uri))
 	---@type Injection[]
 	local injections = {}
 	if not retryAfterLocalLimitExceeded then
-		injections[#injections + 1] = {pos = 0, text = perfyTag .. " local Perfy_GetTime, Perfy_Trace, Perfy_Trace_Passthrough = Perfy_GetTime, Perfy_Trace, Perfy_Trace_Passthrough;"}
+		injections[#injections + 1] = {pos = 0, text = perfyTag .. " local Perfy_GetTime, Perfy_Trace, Perfy_Trace_Passthrough = Perfy_GetTime, Perfy_Trace, Perfy_Trace_Passthrough;" .. perfyEnterFile}
 	else
+		-- TODO: As we're adding more and more functions it might make sense to support partially adding
 		print("File " .. fileName .. " hit > 200 local variables at line " .. splitPos(retryAfterLocalLimitExceeded.start) .. " after injecting. Skipping local cache, Perfy's overhead for this file will be higher.")
-		injections[#injections + 1] = {pos = 0, text = perfyTag}
+		injections[#injections + 1] = {pos = 0, text = perfyTag .. perfyEnterFile}
 	end
 	local lines = self:InstrumentFunctions(state, function(action, funcName, _, passthrough)
 		if passthrough then
@@ -181,8 +205,10 @@ function mod:Instrument(code, fileName, retryAfterLocalLimitExceeded)
 		end
 	end, injections)
 	local newState = parser.compile(table.concat(lines, ""), "Lua", "Lua 5.1")
-	-- Lua only allows 200 local variables, so we can only inject our locals at the top if the file doesn't already define more than this.
+	-- Lua 5.1 only allows 200 local variables, so we can only inject our locals at the top if the file doesn't already define more than this.
 	-- And yes, there are AddOns out there which are at exactly this limit: Plater and NovaWorldBuffs
+	-- Also, there is a limit of 60 upvalues per function that we may hit with the injections, but I haven't encountered this yet for any real code.
+	-- Unfortunately LuaLS currently does not support this, so this case is currently unhandled, see https://github.com/LuaLS/lua-language-server/issues/2578.
 	for _, v in ipairs(newState.errs) do
 		if v.type == "LOCAL_LIMIT" and not retryAfterLocalLimitExceeded then
 			return self:Instrument(code, fileName, v)
@@ -193,6 +219,7 @@ function mod:Instrument(code, fileName, retryAfterLocalLimitExceeded)
 		for i = 1, #state.errs do
 			if newState.errs[i].type ~= state.errs[i].type then
 				newError = newState.errs[i]
+				break
 			end
 		end
 		print("File " .. fileName .. " reported an unexpected new parsing error after instrumentation: " .. newError.type .. " at line " .. splitPos(newError.start))
@@ -201,6 +228,7 @@ function mod:Instrument(code, fileName, retryAfterLocalLimitExceeded)
 end
 
 function mod:InstrumentFile(fileName)
+	-- TODO: this is case sensitive on reasonable filesystems, but WoW in WoW it isn't case sensitive.
 	if not fileName:lower():match(".lua$") then
 		print("File " .. fileName .. " does not seem to be a Lua file, skipping.")
 		return

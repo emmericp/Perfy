@@ -3,6 +3,7 @@ local function usage()
 	print("/perfy start [time] -- Starts Perfy and optionally automatically stops it after time seconds.")
 	print("/perfy stop -- Stops Perfy.")
 	print("/perfy [time] -- Toggles Perfy, if starting optionally stops after time seconds.")
+	print("/perfy ls|loadingscreen -- Starts Perfy once the next loading screen is shown, stops once loading completes.")
 	print("/perfy clear -- Deletes all collected traces.")
 end
 
@@ -22,6 +23,8 @@ function SlashCmdList.PERFY(msg)
 			Perfy_Stop()
 		elseif arg1:lower() == "clear" then
 			Perfy_Clear()
+		elseif arg1:lower() == "ls" or arg1:lower() == "loadingscreen" then
+			Perfy_LogLoadingScreen()
 		else
 			usage()
 		end

@@ -21,6 +21,17 @@ local function stripPathPrefix(path)
 end
 
 local seenFiles = {}
+local function deduplicateFile(fileName)
+	-- Some addons reference their libraries through seemingly different paths, canonicalizing the path avoids some wrong warnings.
+	-- Also, WoW is not case sensitive and some AddOns such as WeakAuras reference the same file but with different cases (libs/ vs. Libs/).
+	local canonical = fs.canonical(fs.path(fileName)):string():lower()
+	if seenFiles[canonical] then
+		return false
+	end
+	seenFiles[canonical] = true
+	return true
+end
+
 local function handleTocFile(fileName)
 	print("Instrumenting AddOn " .. stripPathPrefix(fileName))
 	local file, err = io.open(fileName, "r")
@@ -47,18 +58,27 @@ local function handleTocFile(fileName)
 	local files = toc:FindFiles(lines, dir)
 
 	for _, fileName in ipairs(files) do
-		if not seenFiles[fileName] then  -- avoids errors about files being referenced multiple times (by tocs for different game versions)
+		if deduplicateFile(fileName) then  -- avoids errors about files being referenced multiple times (by tocs for different game versions)
 			instrument:InstrumentFile(fileName) -- TODO: handle failure gracefully to not fail completely on a single bad addon
-			seenFiles[fileName] = true
 		end
 	end
 end
 
+local function handleFile(fileName)
+	if fileName:match(".toc$") then
+		return handleTocFile(fileName)
+	end
+	-- TODO: handle XML files here
+	if deduplicateFile(fileName)then
+		instrument:InstrumentFile(fileName)
+	end
+end
+
 for _, fileName in ipairs(arg) do
-	if fileName:match("Perfy.toc$") then
+	if fileName:match("Perfy.toc$") or fileName:match("!!!Perfy/") then
 		print("File " .. fileName .. " seems to belong to Perfy itself -- skipping.")
 	else
-		handleTocFile(fileName)
+		handleFile(fileName)
 	end
 end
 

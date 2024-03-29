@@ -1,7 +1,7 @@
 local mod = {}
 
 function mod:InjectDependency(lines, dep)
-	dep = dep or "Perfy"
+	dep = dep or "!!!Perfy"
 	local lastMetadataLine = 0
 	local foundDependencyEntry = false
 	local foundPerfyMetadata = false
@@ -42,6 +42,7 @@ local function parseXml(fileName, addonBasePath, files)
 	if not file then error(err) end -- TODO: could handle gracefully to not fail completely on one invalid toc
 	local xml = file:read("*a")
 	file:close()
+	local luaFiles = {}
 	-- "No, you can't parse HTML/XML like that" -- "Haha, regex goes <br/?>"
 	xml = xml:gsub("<!%-%-(.-)%-%->", "")
 	for ref in xml:gmatch("<%s*[iI][nN][cC][lL][uU][dD][eE]%s+[fF][iI][lL][eE]%s*=%s*(.-)%s*/?%s*>") do
@@ -50,7 +51,13 @@ local function parseXml(fileName, addonBasePath, files)
 			ref = ref:sub(2, -2)
 		end
 		ref = ref:gsub("\\", "/")
-		parseXml(dir .. ref, addonBasePath, files)
+		if ref:lower():match("%.xml$") then
+			parseXml(dir .. ref, addonBasePath, files)
+		elseif ref:lower():match("%.lua$") then -- Yes, this is apparently valid
+			luaFiles[#luaFiles + 1] = ref
+		else
+			print("File " .. fileName .. " references file " .. ref .. " which is neither XML nor Lua, ignoring.")
+		end
 	end
 	for ref in xml:gmatch("<%s*[sS][cC][rR][iI][pP][tT]%s+[fF][iI][lL][eE]%s*=%s*(.-)%s*/?%s*>") do
 		local delim = ref:sub(1, 1)
@@ -58,6 +65,9 @@ local function parseXml(fileName, addonBasePath, files)
 			ref = ref:sub(2, -2)
 		end
 		ref = ref:gsub("\\", "/")
+		luaFiles[#luaFiles+1] = ref
+	end
+	for _, ref in ipairs(luaFiles) do
 		local fileRelToXml = io.open(dir .. ref, "r")
 		local fileRelToToc = io.open(addonBasePath .. ref, "r")
 		if fileRelToXml then

@@ -29,7 +29,7 @@ function mod:LoadSavedVars(fileName)
 		local entry = {
 			---@type number
 			timestamp = v[1],
-			---@type "Enter"|"Leave"
+			---@type "Enter"|"Leave"|"CoroutineResume"|"CoroutineYield"|"OnEvent"|"UncaughtError"
 			event = eventNames[v[2]] or error("bad event id: " .. tostring(v[2])),
 			---@type string
 			functionName = functionNames[v[3]] or error("bad function id: " .. tostring(v[3])),
@@ -48,17 +48,26 @@ local stackEntryCache, isLibCache = {}, {}
 local function parseStackEntry(str)
 	if not str then return end
 	if stackEntryCache[str] then return stackEntryCache[str], isLibCache[str] end
-	local addon, firstSubDir, secondSubDir = str:match("[^%s]+ ([^/]+)/?([^/]*)/?([^/]*)/")
+	-- Format is "functionName fileName:line:col"
+	-- Function name can contain spaces if in parentheses like "(main chunk)"
+	local fileName
+	if str:sub(1, 1) == "(" then
+		fileName = str:match("[^)]+%) (.*)")
+	else
+		fileName = str:match("[^%s]+ (.*)")
+	end
+	if not fileName then return end
+	local addon, firstSubDir, secondSubDir = fileName:match("([^/]+)/?([^/]*)/?([^/]*)/")
 	local result = not firstSubDir and addon or firstSubDir and firstSubDir:match("[lL]ibs?") and secondSubDir or addon
 	stackEntryCache[str] = result
 	isLibCache[str] = not not (firstSubDir and firstSubDir:match("[lL]ibs?"))
 	return result
 end
 
-local function backtrace(stack, coroutine)
+local function backtrace(stack, coroutine, overrideAddOnAssociation)
 	if #stack == 0 then return "" end
 	local bt = {}
-	local addonAssociation
+	local addonAssociation = overrideAddOnAssociation
 	for _, v in ipairs(stack) do
 		bt[#bt + 1] = v.functionName
 		-- First addon in a call stack gets associated with the whole trace, this makes sure we don't "blame"
@@ -75,7 +84,7 @@ local function backtrace(stack, coroutine)
 	addonAssociation = addonAssociation or parseStackEntry(stack[1].functionName)
 	addonAssociation = addonAssociation or "Unknown addon"
 	local stackPreamble = {addonAssociation}
-	if coroutine.firstResume then
+	if coroutine and coroutine.firstResume then
 		stackPreamble[#stackPreamble + 1] = coroutine.firstResume
 	end
 	return table.concat(stackPreamble, ";") .. (#stackPreamble > 0 and ";" or "") .. table.concat(bt, ";")
@@ -86,7 +95,7 @@ function mod:FlameGraph(trace, field, overheadField)
 	field = field or "timestamp"
 	overheadField = overheadField or "timeOverhead"
 	local result = {}
-	local eventWarningsShown = {}
+	local warningsShown = {}
 	---@type table<string, {stack: TraceEntry[], firstResume: string?}>
 	local coroutines = {
 		main = {stack = {}}
@@ -94,14 +103,47 @@ function mod:FlameGraph(trace, field, overheadField)
 	---@type string[]
 	local currentCoroutine = {"main"}
 	local stack = coroutines.main.stack
+	local prev
+	local lastAddonLoaded
+	local addonLoadTimes = {}
+	local loadingAddOns = false
 	for i, v in ipairs(trace) do
-		local prev = trace[i - 1]
-		local delta = prev and v[field] - prev[field] - prev[overheadField]
+		local delta = prev and v[field] - prev[field] - prev[overheadField] or 0
 		local activeCoroutine = coroutines[currentCoroutine[#currentCoroutine]]
 		local bt = backtrace(stack, activeCoroutine)
+		if v.event == "Enter" and lastAddonLoaded then
+			lastAddonLoaded.dbg = lastAddonLoaded.dbg or {}
+			lastAddonLoaded.dbg[#lastAddonLoaded.dbg + 1] = v
+		end
 		if v.event == "Enter" then
-			if #stack > 0 and delta > 0 then
-				result[bt] = (result[bt] or 0) + delta
+			if #stack > 0 then
+				if delta > 0 then
+					result[bt] = (result[bt] or 0) + delta
+				end
+			elseif loadingAddOns and v.functionName:find("(main chunk)", nil, true) == 1 then
+				-- Usually the time passed before an Enter from an empty stack is not accounted to anything because the time was likely spent in something that we can't account for.
+				-- However, if this is the execution of main chunk and the last event is either leaving a main chunk or an ADDON_LOADED event then this was the time it took to load the file.
+				-- First event we see is Perfy itself which enables this and we stop once PLAYER_LOGIN fires. Yes, this means this doesn't work for on-demand loaded addons for now.
+				local prevEvent = lastAddonLoaded and lastAddonLoaded.timestamp > (prev and prev.timestamp or 0) and lastAddonLoaded or prev
+				if prevEvent and prevEvent.event == "OnEvent" or prevEvent and prevEvent.event == "Leave" and prevEvent.functionName:find("(main chunk)", nil, true) == 1 then
+					local delta = v[field] - prevEvent[field] - prevEvent[overheadField]
+					if delta > 0 then
+						local fakeStack = {}
+						fakeStack[#fakeStack + 1] = {
+							functionName = "(loading/compiling files, unreliable if you have uninstrumented addons)"
+						}
+						local fileName = v.functionName:match("%) (.*)")
+						local path = ""
+						for part in fileName:match("/(.*)"):gmatch("([^/]*)") do
+							path = path .. "/" .. part
+							fakeStack[#fakeStack + 1] = {
+								functionName = path:sub(2)
+							}
+						end
+						local bt = backtrace(fakeStack, nil, parseStackEntry(v.functionName))
+						result[bt] = (result[bt] or 0) + delta
+					end
+				end
 			end
 			stack[#stack + 1] = v
 		elseif v.event == "Leave" then
@@ -122,7 +164,11 @@ function mod:FlameGraph(trace, field, overheadField)
 						stack = coroutines[currentCoroutine[#currentCoroutine]].stack
 					end
 				else
-					print("bad stack (likely coroutines or pcall/error) at " .. i .. ": leaving " .. v.functionName .. " after entering " .. top.functionName .. " backtrace: " .. bt .. " results for this stack will be off")
+					local warningId = "bad stack " .. v.functionName .. " " .. top.functionName
+					if not warningsShown[warningId] then
+						warningsShown[warningId] = true
+						print("bad stack (likely coroutines or pcall/error) at " .. i .. ": leaving " .. v.functionName .. " after entering " .. top.functionName .. " backtrace: " .. bt .. " results for this stack will be off")
+					end
 					while top and top.functionName ~= v.functionName do
 						stack[#stack] = nil
 						top = stack[#stack]
@@ -149,7 +195,11 @@ function mod:FlameGraph(trace, field, overheadField)
 				result[bt] = (result[bt] or 0) + delta
 			end
 			if #currentCoroutine <= 1 then -- yielding from main
-				print("coroutine stack underflow at " .. i .. " in " .. (#stack > 0 and stack[#stack].functionName or "(unknown function)") .. " likely missing the start of a coroutine in a trace")
+				local warningId = "coroutine stack underflow " .. (#stack > 0 and stack[#stack].functionName or "(unknown function)")
+				if not warningsShown[warningId] then
+					warningsShown[warningId] = true
+					print("coroutine stack underflow at " .. i .. " in " .. (#stack > 0 and stack[#stack].functionName or "(unknown function)") .. " likely missing the start of a coroutine in a trace")
+				end
 			else
 				currentCoroutine[#currentCoroutine] = nil
 				stack = coroutines[currentCoroutine[#currentCoroutine]].stack
@@ -162,11 +212,25 @@ function mod:FlameGraph(trace, field, overheadField)
 				coroutines[coroutine].stack = {}
 			end
 			currentCoroutine = {"main"}
+		elseif v.event == "OnEvent" then
+			local event, eventArg = v.functionName:match("^([^%s]+) (.*)")
+			if event == "PLAYER_LOGIN" then
+				-- This only fires during a reload/login, not during normal loading screens
+				loadingAddOns = false
+			elseif event == "ADDON_LOADED" then
+				if eventArg == "!!!Perfy" then
+					loadingAddOns = true
+				end
+				lastAddonLoaded = v
+			end
 		else
-			if not eventWarningsShown[v.event] then
+			if not warningsShown[v.event] then
 				print(("unknown event at entry %d: %s"):format(i, v.event))
 			end
-			eventWarningsShown[v.event] = true
+			warningsShown[v.event] = true
+		end
+		if v.event == "Enter" or v.event == "Leave" or v.event == "CoroutineResume" or v.event == "CoroutineYield" then
+			prev = v
 		end
 	end
 	local multiplier = field == "timestamp" and 1e6 or 1

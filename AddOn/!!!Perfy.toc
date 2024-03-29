@@ -6,4 +6,5 @@
 ## SavedVariables: Perfy_Export
 
 Perfy.lua
+TraceLoadingScreen.lua
 CLI.lua

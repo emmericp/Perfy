@@ -40,10 +40,13 @@ testInject("local foo\nlocal bar", "local foo test\nlocal bar", {
 testInject("\xef\xbb\xbflocal foo", "\xef\xbb\xbftest local foo", {
 	{pos = 0, text = "test"}
 })
+testInject("local foo\nlocal bar", "local foo\nlocal bar\ntest", {
+	{pos = math.huge, text = "\ntest"}
+})
 
 local function testInstrumentFunction(code, want)
 	local state = parser.compile(code, "Lua", "Lua 5.1")
-	local got = table.concat(instrument:InstrumentFunctions(state, function(action) return instrument:String(action) end), "")
+	local got = table.concat(instrument:InstrumentFunctions(state, function(action) return instrument:String(action) end, nil, true), "")
 	if got ~= want then
 		error(("Unexpected diff, want:\n%s\ngot:\n%s"):format(want, got), 2)
 	end
@@ -96,6 +99,56 @@ function foo() Perfy_Trace("Enter");
 end
 ]])
 
+local perfyHeader = "--[[Perfy has instrumented this file]] local Perfy_GetTime, Perfy_Trace, Perfy_Trace_Passthrough = Perfy_GetTime, Perfy_Trace, Perfy_Trace_Passthrough; "
+local function testMainChunkInstruments(code, want)
+	local state = parser.compile(code, "Lua", "Lua 5.1")
+	local lines = instrument:Instrument(code, "test.lua")
+	assert(lines)
+	local got = table.concat(lines, "")
+	got = got:sub(#perfyHeader + 1)
+	if got ~= want then
+		local firstDiff
+		for i = 1, math.min(#got, #want) do
+			if got:sub(i, i) ~= want:sub(i, i) then
+				firstDiff = i
+				break
+			end
+		end
+		error(("Unexpected diff, want:\n%s\ngot:\n%s\n first diff: '%s' vs. '%s' at offset %d"):format(
+			want, got,
+			want:sub(firstDiff, firstDiff), got:sub(firstDiff, firstDiff),
+			firstDiff
+		), 2)
+	end
+end
+local prefix = "Perfy_Trace(Perfy_GetTime(), \"Enter\", \"(main chunk) file://test.lua\");"
+local suffix = "Perfy_Trace(Perfy_GetTime(), \"Leave\", \"(main chunk) file://test.lua\");"
+local suffixPassthrough = "Perfy_Trace_Passthrough(\"Leave\", \"(main chunk) file://test.lua\","
+
+testMainChunkInstruments("", prefix .. "\n" .. suffix)
+testMainChunkInstruments("foo = bar", prefix .. " foo = bar\n" .. suffix)
+testMainChunkInstruments("return 5", prefix .. " " .. suffix .. " return 5")
+testMainChunkInstruments("do return end", prefix .. " do " .. suffix .. " return end\n" .. suffix)
+testMainChunkInstruments("do return 1, 2 end", prefix .. " do " .. suffix .. " return 1, 2 end\n" .. suffix)
+testMainChunkInstruments("do return foo() end", prefix .. " do return " .. suffixPassthrough .. " foo()) end\n" .. suffix)
+testMainChunkInstruments("do return foo(), 2 end", prefix .. " do return " .. suffixPassthrough .. " foo(), 2) end\n" .. suffix)
+testMainChunkInstruments("-- Foo", prefix .. " -- Foo\n" .. suffix)
+testMainChunkInstruments([[
+local foo = bar
+if GetLocale() ~= "deDE" then
+	return
+end
+foo = 5
+return foo
+]], ([[
+%s local foo = bar
+if GetLocale() ~= "deDE" then
+	%s return
+end
+foo = 5
+%s return foo
+]]):format(prefix, suffix, suffix))
+
 local function testGetFunctionName(code, want, fileName)
 	local state = parser.compile(code, "Lua", "Lua 5.1")
 	if fileName ~= false then
@@ -103,7 +156,7 @@ local function testGetFunctionName(code, want, fileName)
 		state.uri = "file://" .. fileName
 	end
 	local got
-	instrument:InstrumentFunctions(state, function(_, f) got = f end)
+	instrument:InstrumentFunctions(state, function(_, f) got = f end, nil, true)
 	if got ~= want then
 		error(("Unexpected diff, want:\n%s\ngot:\n%s"):format(want, got), 2)
 	end
@@ -148,7 +201,9 @@ for i = 1, 197 do
 	locals[#locals + 1] = "local" .. i
 end
 local code = "local " .. table.concat(locals, ", ")
-testLocalLimits(code, "--[[Perfy has instrumented this file]] local Perfy_GetTime, Perfy_Trace, Perfy_Trace_Passthrough = Perfy_GetTime, Perfy_Trace, Perfy_Trace_Passthrough; " .. code)
+local prefix = "Perfy_Trace(Perfy_GetTime(), \"Enter\", \"(main chunk) file://test.lua\"); "
+local suffix = "\nPerfy_Trace(Perfy_GetTime(), \"Leave\", \"(main chunk) file://test.lua\");"
+testLocalLimits(code, "--[[Perfy has instrumented this file]] local Perfy_GetTime, Perfy_Trace, Perfy_Trace_Passthrough = Perfy_GetTime, Perfy_Trace, Perfy_Trace_Passthrough; " .. prefix .. code .. suffix)
 
 code = code .. "\nlocal localNumber198"
-testLocalLimits(code, "--[[Perfy has instrumented this file]] " .. code)
+testLocalLimits(code, "--[[Perfy has instrumented this file]] " .. prefix .. code .. suffix)
