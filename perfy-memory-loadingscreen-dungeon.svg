@@ -1,0 +1,2029 @@
+<?xml version="1.0" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg version="1.1" width="1600" height="486" onload="init(evt)" viewBox="0 0 1600 486" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+<!-- Flame graph stack visualization. See https://github.com/brendangregg/FlameGraph for latest version, and http://www.brendangregg.com/flamegraphs.html for examples. -->
+<!-- NOTES:  -->
+<defs>
+	<linearGradient id="background" y1="0" y2="1" x1="0" x2="0" >
+		<stop stop-color="#eeeeee" offset="5%" />
+		<stop stop-color="#eeeeb0" offset="95%" />
+	</linearGradient>
+</defs>
+<style type="text/css">
+	text { font-family:Verdana; font-size:12px; fill:rgb(0,0,0); }
+	#search, #ignorecase { opacity:0.1; cursor:pointer; }
+	#search:hover, #search.show, #ignorecase:hover, #ignorecase.show { opacity:1; }
+	#subtitle { text-anchor:middle; font-color:rgb(160,160,160); }
+	#title { text-anchor:middle; font-size:17px}
+	#unzoom { cursor:pointer; }
+	#frames > *:hover { stroke:black; stroke-width:0.5; cursor:pointer; }
+	.hide { display:none; }
+	.parent { opacity:0.5; }
+</style>
+<script type="text/ecmascript">
+<![CDATA[
+	"use strict";
+	var details, searchbtn, unzoombtn, matchedtxt, svg, searching, currentSearchTerm, ignorecase, ignorecaseBtn;
+	function init(evt) {
+		details = document.getElementById("details").firstChild;
+		searchbtn = document.getElementById("search");
+		ignorecaseBtn = document.getElementById("ignorecase");
+		unzoombtn = document.getElementById("unzoom");
+		matchedtxt = document.getElementById("matched");
+		svg = document.getElementsByTagName("svg")[0];
+		searching = 0;
+		currentSearchTerm = null;
+
+		// use GET parameters to restore a flamegraphs state.
+		var params = get_params();
+		if (params.x && params.y)
+			zoom(find_group(document.querySelector('[x="' + params.x + '"][y="' + params.y + '"]')));
+                if (params.s) search(params.s);
+	}
+
+	// event listeners
+	window.addEventListener("click", function(e) {
+		var target = find_group(e.target);
+		if (target) {
+			if (target.nodeName == "a") {
+				if (e.ctrlKey === false) return;
+				e.preventDefault();
+			}
+			if (target.classList.contains("parent")) unzoom(true);
+			zoom(target);
+			if (!document.querySelector('.parent')) {
+				// we have basically done a clearzoom so clear the url
+				var params = get_params();
+				if (params.x) delete params.x;
+				if (params.y) delete params.y;
+				history.replaceState(null, null, parse_params(params));
+				unzoombtn.classList.add("hide");
+				return;
+			}
+
+			// set parameters for zoom state
+			var el = target.querySelector("rect");
+			if (el && el.attributes && el.attributes.y && el.attributes._orig_x) {
+				var params = get_params()
+				params.x = el.attributes._orig_x.value;
+				params.y = el.attributes.y.value;
+				history.replaceState(null, null, parse_params(params));
+			}
+		}
+		else if (e.target.id == "unzoom") clearzoom();
+		else if (e.target.id == "search") search_prompt();
+		else if (e.target.id == "ignorecase") toggle_ignorecase();
+	}, false)
+
+	// mouse-over for info
+	// show
+	window.addEventListener("mouseover", function(e) {
+		var target = find_group(e.target);
+		if (target) details.nodeValue = "Function: " + g_to_text(target);
+	}, false)
+
+	// clear
+	window.addEventListener("mouseout", function(e) {
+		var target = find_group(e.target);
+		if (target) details.nodeValue = ' ';
+	}, false)
+
+	// ctrl-F for search
+	// ctrl-I to toggle case-sensitive search
+	window.addEventListener("keydown",function (e) {
+		if (e.keyCode === 114 || (e.ctrlKey && e.keyCode === 70)) {
+			e.preventDefault();
+			search_prompt();
+		}
+		else if (e.ctrlKey && e.keyCode === 73) {
+			e.preventDefault();
+			toggle_ignorecase();
+		}
+	}, false)
+
+	// functions
+	function get_params() {
+		var params = {};
+		var paramsarr = window.location.search.substr(1).split('&');
+		for (var i = 0; i < paramsarr.length; ++i) {
+			var tmp = paramsarr[i].split("=");
+			if (!tmp[0] || !tmp[1]) continue;
+			params[tmp[0]]  = decodeURIComponent(tmp[1]);
+		}
+		return params;
+	}
+	function parse_params(params) {
+		var uri = "?";
+		for (var key in params) {
+			uri += key + '=' + encodeURIComponent(params[key]) + '&';
+		}
+		if (uri.slice(-1) == "&")
+			uri = uri.substring(0, uri.length - 1);
+		if (uri == '?')
+			uri = window.location.href.split('?')[0];
+		return uri;
+	}
+	function find_child(node, selector) {
+		var children = node.querySelectorAll(selector);
+		if (children.length) return children[0];
+	}
+	function find_group(node) {
+		var parent = node.parentElement;
+		if (!parent) return;
+		if (parent.id == "frames") return node;
+		return find_group(parent);
+	}
+	function orig_save(e, attr, val) {
+		if (e.attributes["_orig_" + attr] != undefined) return;
+		if (e.attributes[attr] == undefined) return;
+		if (val == undefined) val = e.attributes[attr].value;
+		e.setAttribute("_orig_" + attr, val);
+	}
+	function orig_load(e, attr) {
+		if (e.attributes["_orig_"+attr] == undefined) return;
+		e.attributes[attr].value = e.attributes["_orig_" + attr].value;
+		e.removeAttribute("_orig_"+attr);
+	}
+	function g_to_text(e) {
+		var text = find_child(e, "title").firstChild.nodeValue;
+		return (text)
+	}
+	function g_to_func(e) {
+		var func = g_to_text(e);
+		// if there's any manipulation we want to do to the function
+		// name before it's searched, do it here before returning.
+		return (func);
+	}
+	function update_text(e) {
+		var r = find_child(e, "rect");
+		var t = find_child(e, "text");
+		var w = parseFloat(r.attributes.width.value) -3;
+		var txt = find_child(e, "title").textContent.replace(/\([^(]*\)$/,"");
+		t.attributes.x.value = parseFloat(r.attributes.x.value) + 3;
+
+		// Smaller than this size won't fit anything
+		if (w < 2 * 12 * 0.59) {
+			t.textContent = "";
+			return;
+		}
+
+		t.textContent = txt;
+		var sl = t.getSubStringLength(0, txt.length);
+		// check if only whitespace or if we can fit the entire string into width w
+		if (/^ *$/.test(txt) || sl < w)
+			return;
+
+		// this isn't perfect, but gives a good starting point
+		// and avoids calling getSubStringLength too often
+		var start = Math.floor((w/sl) * txt.length);
+		for (var x = start; x > 0; x = x-2) {
+			if (t.getSubStringLength(0, x + 2) <= w) {
+				t.textContent = txt.substring(0, x) + "..";
+				return;
+			}
+		}
+		t.textContent = "";
+	}
+
+	// zoom
+	function zoom_reset(e) {
+		if (e.attributes != undefined) {
+			orig_load(e, "x");
+			orig_load(e, "width");
+		}
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_reset(c[i]);
+		}
+	}
+	function zoom_child(e, x, ratio) {
+		if (e.attributes != undefined) {
+			if (e.attributes.x != undefined) {
+				orig_save(e, "x");
+				e.attributes.x.value = (parseFloat(e.attributes.x.value) - x - 10) * ratio + 10;
+				if (e.tagName == "text")
+					e.attributes.x.value = find_child(e.parentNode, "rect[x]").attributes.x.value + 3;
+			}
+			if (e.attributes.width != undefined) {
+				orig_save(e, "width");
+				e.attributes.width.value = parseFloat(e.attributes.width.value) * ratio;
+			}
+		}
+
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_child(c[i], x - 10, ratio);
+		}
+	}
+	function zoom_parent(e) {
+		if (e.attributes) {
+			if (e.attributes.x != undefined) {
+				orig_save(e, "x");
+				e.attributes.x.value = 10;
+			}
+			if (e.attributes.width != undefined) {
+				orig_save(e, "width");
+				e.attributes.width.value = parseInt(svg.width.baseVal.value) - (10 * 2);
+			}
+		}
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_parent(c[i]);
+		}
+	}
+	function zoom(node) {
+		var attr = find_child(node, "rect").attributes;
+		var width = parseFloat(attr.width.value);
+		var xmin = parseFloat(attr.x.value);
+		var xmax = parseFloat(xmin + width);
+		var ymin = parseFloat(attr.y.value);
+		var ratio = (svg.width.baseVal.value - 2 * 10) / width;
+
+		// XXX: Workaround for JavaScript float issues (fix me)
+		var fudge = 0.0001;
+
+		unzoombtn.classList.remove("hide");
+
+		var el = document.getElementById("frames").children;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			var a = find_child(e, "rect").attributes;
+			var ex = parseFloat(a.x.value);
+			var ew = parseFloat(a.width.value);
+			var upstack;
+			// Is it an ancestor
+			if (0 == 0) {
+				upstack = parseFloat(a.y.value) > ymin;
+			} else {
+				upstack = parseFloat(a.y.value) < ymin;
+			}
+			if (upstack) {
+				// Direct ancestor
+				if (ex <= xmin && (ex+ew+fudge) >= xmax) {
+					e.classList.add("parent");
+					zoom_parent(e);
+					update_text(e);
+				}
+				// not in current path
+				else
+					e.classList.add("hide");
+			}
+			// Children maybe
+			else {
+				// no common path
+				if (ex < xmin || ex + fudge >= xmax) {
+					e.classList.add("hide");
+				}
+				else {
+					zoom_child(e, xmin, ratio);
+					update_text(e);
+				}
+			}
+		}
+		search();
+	}
+	function unzoom(dont_update_text) {
+		unzoombtn.classList.add("hide");
+		var el = document.getElementById("frames").children;
+		for(var i = 0; i < el.length; i++) {
+			el[i].classList.remove("parent");
+			el[i].classList.remove("hide");
+			zoom_reset(el[i]);
+			if(!dont_update_text) update_text(el[i]);
+		}
+		search();
+	}
+	function clearzoom() {
+		unzoom();
+
+		// remove zoom state
+		var params = get_params();
+		if (params.x) delete params.x;
+		if (params.y) delete params.y;
+		history.replaceState(null, null, parse_params(params));
+	}
+
+	// search
+	function toggle_ignorecase() {
+		ignorecase = !ignorecase;
+		if (ignorecase) {
+			ignorecaseBtn.classList.add("show");
+		} else {
+			ignorecaseBtn.classList.remove("show");
+		}
+		reset_search();
+		search();
+	}
+	function reset_search() {
+		var el = document.querySelectorAll("#frames rect");
+		for (var i = 0; i < el.length; i++) {
+			orig_load(el[i], "fill")
+		}
+		var params = get_params();
+		delete params.s;
+		history.replaceState(null, null, parse_params(params));
+	}
+	function search_prompt() {
+		if (!searching) {
+			var term = prompt("Enter a search term (regexp " +
+			    "allowed, eg: ^ext4_)"
+			    + (ignorecase ? ", ignoring case" : "")
+			    + "\nPress Ctrl-i to toggle case sensitivity", "");
+			if (term != null) search(term);
+		} else {
+			reset_search();
+			searching = 0;
+			currentSearchTerm = null;
+			searchbtn.classList.remove("show");
+			searchbtn.firstChild.nodeValue = "Search"
+			matchedtxt.classList.add("hide");
+			matchedtxt.firstChild.nodeValue = ""
+		}
+	}
+	function search(term) {
+		if (term) currentSearchTerm = term;
+
+		var re = new RegExp(currentSearchTerm, ignorecase ? 'i' : '');
+		var el = document.getElementById("frames").children;
+		var matches = new Object();
+		var maxwidth = 0;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			var func = g_to_func(e);
+			var rect = find_child(e, "rect");
+			if (func == null || rect == null)
+				continue;
+
+			// Save max width. Only works as we have a root frame
+			var w = parseFloat(rect.attributes.width.value);
+			if (w > maxwidth)
+				maxwidth = w;
+
+			if (func.match(re)) {
+				// highlight
+				var x = parseFloat(rect.attributes.x.value);
+				orig_save(rect, "fill");
+				rect.attributes.fill.value = "rgb(230,0,230)";
+
+				// remember matches
+				if (matches[x] == undefined) {
+					matches[x] = w;
+				} else {
+					if (w > matches[x]) {
+						// overwrite with parent
+						matches[x] = w;
+					}
+				}
+				searching = 1;
+			}
+		}
+		if (!searching)
+			return;
+		var params = get_params();
+		params.s = currentSearchTerm;
+		history.replaceState(null, null, parse_params(params));
+
+		searchbtn.classList.add("show");
+		searchbtn.firstChild.nodeValue = "Reset Search";
+
+		// calculate percent matched, excluding vertical overlap
+		var count = 0;
+		var lastx = -1;
+		var lastw = 0;
+		var keys = Array();
+		for (k in matches) {
+			if (matches.hasOwnProperty(k))
+				keys.push(k);
+		}
+		// sort the matched frames by their x location
+		// ascending, then width descending
+		keys.sort(function(a, b){
+			return a - b;
+		});
+		// Step through frames saving only the biggest bottom-up frames
+		// thanks to the sort order. This relies on the tree property
+		// where children are always smaller than their parents.
+		var fudge = 0.0001;	// JavaScript floating point
+		for (var k in keys) {
+			var x = parseFloat(keys[k]);
+			var w = matches[keys[k]];
+			if (x >= lastx + lastw - fudge) {
+				count += w;
+				lastx = x;
+				lastw = w;
+			}
+		}
+		// display matched percent
+		matchedtxt.classList.remove("hide");
+		var pct = 100 * count / maxwidth;
+		if (pct != 100) pct = pct.toFixed(1)
+		matchedtxt.firstChild.nodeValue = "Matched: " + pct + "%";
+	}
+]]>
+</script>
+<rect x="0.0" y="0" width="1600.0" height="486.0" fill="url(#background)"  />
+<text id="title" x="800.00" y="24" >Memory allocations</text>
+<text id="details" x="10.00" y="469" > </text>
+<text id="unzoom" x="10.00" y="24" class="hide">Reset Zoom</text>
+<text id="search" x="1490.00" y="24" >Search</text>
+<text id="ignorecase" x="1574.00" y="24" >ic</text>
+<text id="matched" x="1490.00" y="469" > </text>
+<g id="frames">
+<g >
+<title>AceHook:Hook AdiBags/libs/AceHook-3.0/AceHook-3.0.lua:273:0 (696 Bytes, 0.12%)</title><rect x="36.9" y="261" width="2.0" height="15.0" fill="rgb(217,57,13)" rx="2" ry="2" />
+<text  x="39.94" y="271.5" ></text>
+</g>
+<g >
+<title>Plater.UpdateAllPlates Plater/Plater.lua:5639:1 (72 Bytes, 0.01%)</title><rect x="1255.2" y="373" width="0.2" height="15.0" fill="rgb(238,152,36)" rx="2" ry="2" />
+<text  x="1258.23" y="383.5" ></text>
+</g>
+<g >
+<title>AceTimer:ScheduleTimer CharacterNotes/Libs/AceTimer-3.0/AceTimer-3.0.lua:94:0 (1,904 Bytes, 0.34%)</title><rect x="1576.1" y="389" width="5.4" height="15.0" fill="rgb(249,205,49)" rx="2" ry="2" />
+<text  x="1579.11" y="399.5" ></text>
+</g>
+<g >
+<title>(anonymous) Auctionator/Libs/LibSerialize/LibSerialize.lua:834:45 (148 Bytes, 0.03%)</title><rect x="866.6" y="69" width="0.4" height="15.0" fill="rgb(231,123,29)" rx="2" ry="2" />
+<text  x="869.57" y="79.5" ></text>
+</g>
+<g >
+<title>escape_for_gsub DBM-Core/Libs/LibDeflate/LibDeflate.lua:2877:6 (505 Bytes, 0.09%)</title><rect x="835.9" y="277" width="1.4" height="15.0" fill="rgb(205,1,0)" rx="2" ry="2" />
+<text  x="838.92" y="287.5" ></text>
+</g>
+<g >
+<title>Tags:UpdatePowerType ShadowedUnitFrames/modules/tags.lua:93:0 (84 Bytes, 0.02%)</title><rect x="1488.8" y="357" width="0.2" height="15.0" fill="rgb(207,11,2)" rx="2" ry="2" />
+<text  x="1491.78" y="367.5" ></text>
+</g>
+<g >
+<title>LibSerialize:_ReadObject Auctionator/Libs/LibSerialize/LibSerialize.lua:655:0 (148 Bytes, 0.03%)</title><rect x="866.6" y="85" width="0.4" height="15.0" fill="rgb(221,77,18)" rx="2" ry="2" />
+<text  x="869.57" y="95.5" ></text>
+</g>
+<g >
+<title>(anonymous) GlobalSearch/Modules/TaskQueue.lua:108:37 (2,400 Bytes, 0.43%)</title><rect x="140.7" y="405" width="6.8" height="15.0" fill="rgb(214,42,10)" rx="2" ry="2" />
+<text  x="143.74" y="415.5" ></text>
+</g>
+<g >
+<title>CreateTalentCache WeakAuras/WeakAuras.lua:933:6 (1,755 Bytes, 0.31%)</title><rect x="1492.0" y="373" width="5.0" height="15.0" fill="rgb(220,70,16)" rx="2" ry="2" />
+<text  x="1495.00" y="383.5" ></text>
+</g>
+<g >
+<title>(anonymous) NovaWorldBuffs/NovaWorldBuffs.lua:869:18 (4,608 Bytes, 0.82%)</title><rect x="655.4" y="405" width="13.0" height="15.0" fill="rgb(206,6,1)" rx="2" ry="2" />
+<text  x="658.36" y="415.5" ></text>
+</g>
+<g >
+<title>table.copy Details/Libs/DF/fw.lua:792:0 (24,640 Bytes, 4.41%)</title><rect x="1183.3" y="277" width="69.6" height="15.0" fill="rgb(243,179,42)" rx="2" ry="2" />
+<text  x="1186.25" y="287.5" >table.c..</text>
+</g>
+<g >
+<title>CompactUnitFrame_UpdateHealPrediction ClassicHealPrediction/ClassicHealPrediction.lua:554:4 (120 Bytes, 0.02%)</title><rect x="79.3" y="373" width="0.4" height="15.0" fill="rgb(236,143,34)" rx="2" ry="2" />
+<text  x="82.32" y="383.5" ></text>
+</g>
+<g >
+<title>dataFunctionRefs.MP5Casting ExtendedCharacterStats/Modules/Data/Data.lua:197:21 (4,656 Bytes, 0.83%)</title><rect x="92.9" y="325" width="13.1" height="15.0" fill="rgb(237,148,35)" rx="2" ry="2" />
+<text  x="95.88" y="335.5" ></text>
+</g>
+<g >
+<title>_QuestEventHandler:QuestLogUpdate Questie/Modules/Quest/QuestEventHandler.lua:358:0 (448 Bytes, 0.08%)</title><rect x="1289.3" y="389" width="1.3" height="15.0" fill="rgb(247,197,47)" rx="2" ry="2" />
+<text  x="1292.29" y="399.5" ></text>
+</g>
+<g >
+<title>(anonymous) NovaWorldBuffs/NovaWorldBuffs.lua:6231:23 (144 Bytes, 0.03%)</title><rect x="655.0" y="405" width="0.4" height="15.0" fill="rgb(243,175,41)" rx="2" ry="2" />
+<text  x="657.95" y="415.5" ></text>
+</g>
+<g >
+<title>RXPGuides (70,124 Bytes, 12.54%)</title><rect x="1290.6" y="421" width="198.1" height="15.0" fill="rgb(214,43,10)" rx="2" ry="2" />
+<text  x="1293.56" y="431.5" >RXPGuides</text>
+</g>
+<g >
+<title>LibSerialize:_ReadTable Auctionator/Libs/LibSerialize/LibSerialize.lua:695:0 (1,996 Bytes, 0.36%)</title><rect x="861.4" y="181" width="5.6" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="864.35" y="191.5" ></text>
+</g>
+<g >
+<title>NWB:recordAttunementKeys NovaWorldBuffs/NWBData.lua:3024:0 (90,624 Bytes, 16.20%)</title><rect x="392.5" y="373" width="256.0" height="15.0" fill="rgb(212,32,7)" rx="2" ry="2" />
+<text  x="395.47" y="383.5" >NWB:recordAttunementKeys NovaWorld..</text>
+</g>
+<g >
+<title>tips:CatalogActionBars RXPGuides/Tips.lua:357:0 (69,132 Bytes, 12.36%)</title><rect x="1291.4" y="325" width="195.3" height="15.0" fill="rgb(221,77,18)" rx="2" ry="2" />
+<text  x="1294.37" y="335.5" >tips:CatalogActionBars RX..</text>
+</g>
+<g >
+<title>GenerateWoWChatChannelCodec DBM-Core/Libs/LibDeflate/LibDeflate.lua:3118:6 (59,363 Bytes, 10.61%)</title><rect x="669.6" y="309" width="167.7" height="15.0" fill="rgb(249,205,49)" rx="2" ry="2" />
+<text  x="672.64" y="319.5" >GenerateWoWChatChanne..</text>
+</g>
+<g >
+<title>Enable AdiBags/libs/AceAddon-3.0/AceAddon-3.0.lua:290:0 (22,258 Bytes, 3.98%)</title><rect x="10.0" y="341" width="62.9" height="15.0" fill="rgb(227,101,24)" rx="2" ry="2" />
+<text  x="13.00" y="351.5" >Enable..</text>
+</g>
+<g >
+<title>LibHealComm-4.0 (120 Bytes, 0.02%)</title><rect x="390.2" y="421" width="0.3" height="15.0" fill="rgb(227,103,24)" rx="2" ry="2" />
+<text  x="393.18" y="431.5" ></text>
+</g>
+<g >
+<title>LibSerialize:_ReadObject Auctionator/Libs/LibSerialize/LibSerialize.lua:655:0 (2,284 Bytes, 0.41%)</title><rect x="860.5" y="277" width="6.5" height="15.0" fill="rgb(221,77,18)" rx="2" ry="2" />
+<text  x="863.54" y="287.5" ></text>
+</g>
+<g >
+<title>Inflate DBM-Core/Libs/LibDeflate/LibDeflate.lua:2620:6 (3,226 Bytes, 0.58%)</title><rect x="844.0" y="293" width="9.1" height="15.0" fill="rgb(252,220,52)" rx="2" ry="2" />
+<text  x="847.03" y="303.5" ></text>
+</g>
+<g >
+<title>LibSerialize:_ClearReferences Auctionator/Libs/LibSerialize/LibSerialize.lua:643:0 (288 Bytes, 0.05%)</title><rect x="854.6" y="293" width="0.8" height="15.0" fill="rgb(241,168,40)" rx="2" ry="2" />
+<text  x="857.61" y="303.5" ></text>
+</g>
+<g >
+<title>UpdateMinimap NovaWorldBuffs/Lib/HereBeDragons/HereBeDragons-Pins-2.0.lua:474:6 (1,673 Bytes, 0.30%)</title><rect x="342.9" y="389" width="4.7" height="15.0" fill="rgb(206,6,1)" rx="2" ry="2" />
+<text  x="345.88" y="399.5" ></text>
+</g>
+<g >
+<title>LoadEvent WeakAuras/GenericTrigger.lua:1271:0 (1,392 Bytes, 0.25%)</title><rect x="1502.6" y="325" width="3.9" height="15.0" fill="rgb(234,137,32)" rx="2" ry="2" />
+<text  x="1505.61" y="335.5" ></text>
+</g>
+<g >
+<title>CreateReader Auctionator/Libs/LibSerialize/LibSerialize.lua:490:6 (424 Bytes, 0.08%)</title><rect x="858.5" y="277" width="1.2" height="15.0" fill="rgb(219,68,16)" rx="2" ry="2" />
+<text  x="861.53" y="287.5" ></text>
+</g>
+<g >
+<title>AceTimer:ScheduleTimer CharacterNotes/Libs/AceTimer-3.0/AceTimer-3.0.lua:94:0 (728 Bytes, 0.13%)</title><rect x="126.7" y="341" width="2.1" height="15.0" fill="rgb(249,205,49)" rx="2" ry="2" />
+<text  x="129.73" y="351.5" ></text>
+</g>
+<g >
+<title>schedule DBM-Core/modules/Scheduler.lua:225:6 (200 Bytes, 0.04%)</title><rect x="84.5" y="341" width="0.6" height="15.0" fill="rgb(230,117,28)" rx="2" ry="2" />
+<text  x="87.53" y="351.5" ></text>
+</g>
+<g >
+<title>EventHandler.HandleOnEvent ExtendedCharacterStats/Modules/EventHandler.lua:25:0 (10,824 Bytes, 1.94%)</title><rect x="88.6" y="405" width="30.6" height="15.0" fill="rgb(236,146,35)" rx="2" ry="2" />
+<text  x="91.61" y="415.5" >Ev..</text>
+</g>
+<g >
+<title>clearPendingHeals ClassicHealPrediction/libs/LibHealComm-4.0/LibHealComm-4.0.lua:372:6 (120 Bytes, 0.02%)</title><rect x="390.2" y="373" width="0.3" height="15.0" fill="rgb(244,179,42)" rx="2" ry="2" />
+<text  x="393.18" y="383.5" ></text>
+</g>
+<g >
+<title>target.? AdiBags/libs/CallbackHandler-1.0/CallbackHandler-1.0.lua:80:24 (232 Bytes, 0.04%)</title><rect x="25.8" y="245" width="0.6" height="15.0" fill="rgb(208,17,4)" rx="2" ry="2" />
+<text  x="28.77" y="255.5" ></text>
+</g>
+<g >
+<title>tips:ACTIONBAR_SLOT_CHANGED RXPGuides/Tips.lua:395:0 (69,132 Bytes, 12.36%)</title><rect x="1291.4" y="341" width="195.3" height="15.0" fill="rgb(241,168,40)" rx="2" ry="2" />
+<text  x="1294.37" y="351.5" >tips:ACTIONBAR_SLOT_CHANG..</text>
+</g>
+<g >
+<title>CharacterNotes:AddMessage CharacterNotes/CharacterNotes.lua:1470:0 (2,136 Bytes, 0.38%)</title><rect x="73.3" y="389" width="6.0" height="15.0" fill="rgb(219,65,15)" rx="2" ry="2" />
+<text  x="76.29" y="399.5" ></text>
+</g>
+<g >
+<title>RegisterBucket AdiBags/core/EventHandlers.lua:67:6 (1,393 Bytes, 0.25%)</title><rect x="28.4" y="245" width="3.9" height="15.0" fill="rgb(249,204,48)" rx="2" ry="2" />
+<text  x="31.40" y="255.5" ></text>
+</g>
+<g >
+<title>BuffTrigger.LoadDisplays WeakAuras/BuffTrigger2.lua:2626:0 (1,208 Bytes, 0.22%)</title><rect x="1498.1" y="341" width="3.4" height="15.0" fill="rgb(221,76,18)" rx="2" ry="2" />
+<text  x="1501.13" y="351.5" ></text>
+</g>
+<g >
+<title>NWB:throddleEventByFunc NovaWorldBuffs/NWBData.lua:2871:0 (240 Bytes, 0.04%)</title><rect x="654.3" y="389" width="0.7" height="15.0" fill="rgb(243,179,42)" rx="2" ry="2" />
+<text  x="657.27" y="399.5" ></text>
+</g>
+<g >
+<title>Mirror:UpdateBars Quartz/modules/Mirror.lua:492:1 (728 Bytes, 0.13%)</title><rect x="1259.5" y="341" width="2.0" height="15.0" fill="rgb(225,95,22)" rx="2" ry="2" />
+<text  x="1262.46" y="351.5" ></text>
+</g>
+<g >
+<title>RunTriggerFunc WeakAuras/GenericTrigger.lua:620:6 (86 Bytes, 0.02%)</title><rect x="1582.7" y="357" width="0.2" height="15.0" fill="rgb(245,186,44)" rx="2" ry="2" />
+<text  x="1585.71" y="367.5" ></text>
+</g>
+<g >
+<title>(anonymous) CharacterNotes/Libs/AceEvent-3.0/AceEvent-3.0.lua:119:36 (2,056 Bytes, 0.37%)</title><rect x="1261.8" y="405" width="5.8" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="1264.79" y="415.5" ></text>
+</g>
+<g >
+<title>new CharacterNotes/Libs/AceTimer-3.0/AceTimer-3.0.lua:32:6 (728 Bytes, 0.13%)</title><rect x="126.7" y="325" width="2.1" height="15.0" fill="rgb(247,194,46)" rx="2" ry="2" />
+<text  x="129.73" y="335.5" ></text>
+</g>
+<g >
+<title>bagProto:OnEnable AdiBags/core/Bags.lua:53:0 (5,816 Bytes, 1.04%)</title><rect x="10.0" y="277" width="16.4" height="15.0" fill="rgb(205,2,0)" rx="2" ry="2" />
+<text  x="13.00" y="287.5" ></text>
+</g>
+<g >
+<title>CreateDecompressState DBM-Core/Libs/LibDeflate/LibDeflate.lua:2277:6 (2,144 Bytes, 0.38%)</title><rect x="838.0" y="293" width="6.0" height="15.0" fill="rgb(253,224,53)" rx="2" ry="2" />
+<text  x="840.97" y="303.5" ></text>
+</g>
+<g >
+<title>regfunc AdiBags/libs/CallbackHandler-1.0/CallbackHandler-1.0.lua:109:14 (144 Bytes, 0.03%)</title><rect x="72.9" y="357" width="0.4" height="15.0" fill="rgb(206,8,2)" rx="2" ry="2" />
+<text  x="75.88" y="367.5" ></text>
+</g>
+<g >
+<title>(anonymous) AdiBags/libs/AceHook-3.0/AceHook-3.0.lua:19:67 (144 Bytes, 0.03%)</title><rect x="72.9" y="245" width="0.4" height="15.0" fill="rgb(224,88,21)" rx="2" ry="2" />
+<text  x="75.88" y="255.5" ></text>
+</g>
+<g >
+<title>Data:GetStatInfo ExtendedCharacterStats/Modules/Data/Data.lua:8:0 (9,312 Bytes, 1.66%)</title><rect x="92.9" y="341" width="26.3" height="15.0" fill="rgb(253,225,53)" rx="2" ry="2" />
+<text  x="95.88" y="351.5" >D..</text>
+</g>
+<g >
+<title>(anonymous) Gargul/Classes/TradeTime.lua:46:11 (1,080 Bytes, 0.19%)</title><rect x="137.0" y="373" width="3.1" height="15.0" fill="rgb(205,1,0)" rx="2" ry="2" />
+<text  x="140.03" y="383.5" ></text>
+</g>
+<g >
+<title>PlaterCLEUParser.Parser Plater/Plater.lua:9299:27 (392 Bytes, 0.07%)</title><rect x="1255.4" y="405" width="1.1" height="15.0" fill="rgb(243,179,42)" rx="2" ry="2" />
+<text  x="1258.44" y="415.5" ></text>
+</g>
+<g >
+<title>NWB:pairsByKeys NovaWorldBuffs/NovaWorldBuffs.lua:4835:0 (4,416 Bytes, 0.79%)</title><rect x="655.9" y="373" width="12.5" height="15.0" fill="rgb(229,112,26)" rx="2" ry="2" />
+<text  x="658.90" y="383.5" ></text>
+</g>
+<g >
+<title>UpdateCurrentPosition NovaWorldBuffs/Lib/HereBeDragons/HereBeDragons-2.0.lua:283:6 (1,248 Bytes, 0.22%)</title><rect x="304.3" y="389" width="3.6" height="15.0" fill="rgb(243,176,42)" rx="2" ry="2" />
+<text  x="307.35" y="399.5" ></text>
+</g>
+<g >
+<title>f:COMBAT_LOG_EVENT_UNFILTERED Plater/libs/LibClassicDurations/core.lua:511:0 (1,560 Bytes, 0.28%)</title><rect x="385.8" y="389" width="4.4" height="15.0" fill="rgb(209,21,5)" rx="2" ry="2" />
+<text  x="388.78" y="399.5" ></text>
+</g>
+<g >
+<title>DBM:LoadModsOnDemand DBM-Core/DBM-Core.lua:3932:1 (837 Bytes, 0.15%)</title><rect x="86.2" y="373" width="2.4" height="15.0" fill="rgb(253,222,53)" rx="2" ry="2" />
+<text  x="89.24" y="383.5" ></text>
+</g>
+<g >
+<title>codec:Decode DBM-Core/Libs/LibDeflate/LibDeflate.lua:3042:2 (222 Bytes, 0.04%)</title><rect x="837.3" y="309" width="0.7" height="15.0" fill="rgb(236,144,34)" rx="2" ry="2" />
+<text  x="840.34" y="319.5" ></text>
+</g>
+<g >
+<title>LibSerialize:_ReadObject Auctionator/Libs/LibSerialize/LibSerialize.lua:655:0 (2,076 Bytes, 0.37%)</title><rect x="861.1" y="213" width="5.9" height="15.0" fill="rgb(221,77,18)" rx="2" ry="2" />
+<text  x="864.13" y="223.5" ></text>
+</g>
+<g >
+<title>HealComm:ZONE_CHANGED_NEW_AREA ClassicHealPrediction/libs/LibHealComm-4.0/LibHealComm-4.0.lua:2276:0 (120 Bytes, 0.02%)</title><rect x="390.2" y="389" width="0.3" height="15.0" fill="rgb(208,16,4)" rx="2" ry="2" />
+<text  x="393.18" y="399.5" ></text>
+</g>
+<g >
+<title>table.copy Details/Libs/DF/fw.lua:792:0 (384 Bytes, 0.07%)</title><rect x="1251.8" y="261" width="1.1" height="15.0" fill="rgb(243,179,42)" rx="2" ry="2" />
+<text  x="1254.78" y="271.5" ></text>
+</g>
+<g >
+<title>new CharacterNotes/Libs/AceTimer-3.0/AceTimer-3.0.lua:32:6 (1,904 Bytes, 0.34%)</title><rect x="1576.1" y="373" width="5.4" height="15.0" fill="rgb(247,194,46)" rx="2" ry="2" />
+<text  x="1579.11" y="383.5" ></text>
+</g>
+<g >
+<title>QuestieCombatQueue:Queue Questie/Modules/Libs/QuestieCombatQueue.lua:37:0 (336 Bytes, 0.06%)</title><rect x="1289.6" y="373" width="1.0" height="15.0" fill="rgb(236,145,34)" rx="2" ry="2" />
+<text  x="1292.61" y="383.5" ></text>
+</g>
+<g >
+<title>QuestieQuest:SmoothReset Questie/Modules/Quest/QuestieQuest.lua:277:0 (2,056 Bytes, 0.37%)</title><rect x="1261.8" y="341" width="5.8" height="15.0" fill="rgb(234,136,32)" rx="2" ry="2" />
+<text  x="1264.79" y="351.5" ></text>
+</g>
+<g >
+<title>WeakAuras.ScanEventsInternal WeakAuras/GenericTrigger.lua:851:0 (518 Bytes, 0.09%)</title><rect x="1581.5" y="373" width="1.4" height="15.0" fill="rgb(234,134,32)" rx="2" ry="2" />
+<text  x="1584.49" y="383.5" ></text>
+</g>
+<g >
+<title>NWB:config NovaWorldBuffs/Options.lua:3750:0 (2,064 Bytes, 0.37%)</title><rect x="879.2" y="261" width="5.8" height="15.0" fill="rgb(248,202,48)" rx="2" ry="2" />
+<text  x="882.16" y="271.5" ></text>
+</g>
+<g >
+<title>(anonymous) GlobalSearch/SearchProviders/SpellsSearchProvider.lua:18:23 (36,859 Bytes, 6.59%)</title><rect x="164.4" y="389" width="104.1" height="15.0" fill="rgb(248,199,47)" rx="2" ry="2" />
+<text  x="167.35" y="399.5" >(anonymous) ..</text>
+</g>
+<g >
+<title>GL:cancelTimer Gargul/Classes/Helpers.lua:1267:0 (63 Bytes, 0.01%)</title><rect x="128.8" y="341" width="0.2" height="15.0" fill="rgb(215,48,11)" rx="2" ry="2" />
+<text  x="131.78" y="351.5" ></text>
+</g>
+<g >
+<title>OnEvent Questie/Libs/HereBeDragons/HereBeDragons-2.0.lua:328:6 (12,392 Bytes, 2.22%)</title><rect x="307.9" y="405" width="35.0" height="15.0" fill="rgb(247,196,46)" rx="2" ry="2" />
+<text  x="310.87" y="415.5" >On..</text>
+</g>
+<g >
+<title>UpdateMinimapZoom Questie/Libs/HereBeDragons/HereBeDragons-Pins-2.0.lua:330:6 (1,248 Bytes, 0.22%)</title><rect x="347.6" y="373" width="3.5" height="15.0" fill="rgb(209,20,4)" rx="2" ry="2" />
+<text  x="350.61" y="383.5" ></text>
+</g>
+<g >
+<title>LibSerialize:_ReadPair Auctionator/Libs/LibSerialize/LibSerialize.lua:760:0 (148 Bytes, 0.03%)</title><rect x="866.6" y="101" width="0.4" height="15.0" fill="rgb(252,218,52)" rx="2" ry="2" />
+<text  x="869.57" y="111.5" ></text>
+</g>
+<g >
+<title>(anonymous) CharacterNotes/Libs/AceEvent-3.0/AceEvent-3.0.lua:119:36 (70,124 Bytes, 12.54%)</title><rect x="1290.6" y="405" width="198.1" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="1293.56" y="415.5" >(anonymous) CharacterNote..</text>
+</g>
+<g >
+<title>GetOrCreateSubTable WeakAuras/BuffTrigger2.lua:149:6 (288 Bytes, 0.05%)</title><rect x="1499.1" y="277" width="0.8" height="15.0" fill="rgb(208,16,3)" rx="2" ry="2" />
+<text  x="1502.13" y="287.5" ></text>
+</g>
+<g >
+<title>LibSerialize:_ReadObject Auctionator/Libs/LibSerialize/LibSerialize.lua:655:0 (207 Bytes, 0.04%)</title><rect x="855.4" y="293" width="0.6" height="15.0" fill="rgb(221,77,18)" rx="2" ry="2" />
+<text  x="858.42" y="303.5" ></text>
+</g>
+<g >
+<title>module:PLAYER_ENTERING_WORLD GlobalSearch/Modules/TaskQueue.lua:45:0 (232 Bytes, 0.04%)</title><rect x="140.1" y="341" width="0.6" height="15.0" fill="rgb(251,213,51)" rx="2" ry="2" />
+<text  x="143.08" y="351.5" ></text>
+</g>
+<g >
+<title>bucketLib:RegisterBucketEvent AdiBags/core/EventHandlers.lua:120:0 (1,577 Bytes, 0.28%)</title><rect x="44.9" y="277" width="4.4" height="15.0" fill="rgb(224,87,20)" rx="2" ry="2" />
+<text  x="47.87" y="287.5" ></text>
+</g>
+<g >
+<title>addon:BAG_UPDATE_DELAYED RXPGuides/RXPGuides.lua:1179:0 (72 Bytes, 0.01%)</title><rect x="1290.6" y="325" width="0.2" height="15.0" fill="rgb(239,158,37)" rx="2" ry="2" />
+<text  x="1293.56" y="335.5" ></text>
+</g>
+<g >
+<title>target.? AdiBags/libs/CallbackHandler-1.0/CallbackHandler-1.0.lua:80:24 (1,056 Bytes, 0.19%)</title><rect x="38.9" y="261" width="3.0" height="15.0" fill="rgb(208,17,4)" rx="2" ry="2" />
+<text  x="41.91" y="271.5" ></text>
+</g>
+<g >
+<title>createHook AdiBags/libs/AceHook-3.0/AceHook-3.0.lua:82:0 (2,016 Bytes, 0.36%)</title><rect x="20.1" y="197" width="5.7" height="15.0" fill="rgb(210,26,6)" rx="2" ry="2" />
+<text  x="23.08" y="207.5" ></text>
+</g>
+<g >
+<title>(anonymous) ClassicHealPrediction/ClassicHealPrediction.lua:1501:8 (240 Bytes, 0.04%)</title><rect x="79.3" y="405" width="0.7" height="15.0" fill="rgb(235,139,33)" rx="2" ry="2" />
+<text  x="82.32" y="415.5" ></text>
+</g>
+<g >
+<title>registry:Fire AdiBags/libs/CallbackHandler-1.0/CallbackHandler-1.0.lua:49:1 (2,056 Bytes, 0.37%)</title><rect x="1261.8" y="389" width="5.8" height="15.0" fill="rgb(215,48,11)" rx="2" ry="2" />
+<text  x="1264.79" y="399.5" ></text>
+</g>
+<g >
+<title>Plater.WipeAndRecompileAllScripts Plater/Plater.lua:11569:1 (129,676 Bytes, 23.19%)</title><rect x="886.5" y="373" width="366.4" height="15.0" fill="rgb(223,86,20)" rx="2" ry="2" />
+<text  x="889.53" y="383.5" >Plater.WipeAndRecompileAllScripts Plater/Plater.l..</text>
+</g>
+<g >
+<title>drawMinimapPin Questie/Libs/HereBeDragons/HereBeDragons-Pins-2.0.lua:121:6 (9,408 Bytes, 1.68%)</title><rect x="312.8" y="309" width="26.6" height="15.0" fill="rgb(205,2,0)" rx="2" ry="2" />
+<text  x="315.78" y="319.5" >d..</text>
+</g>
+<g >
+<title>Gargul (7,396 Bytes, 1.32%)</title><rect x="119.2" y="421" width="20.9" height="15.0" fill="rgb(223,82,19)" rx="2" ry="2" />
+<text  x="122.19" y="431.5" ></text>
+</g>
+<g >
+<title>NWB:convertKeys NovaWorldBuffs/NWBData.lua:2237:0 (4,056 Bytes, 0.73%)</title><rect x="873.5" y="309" width="11.5" height="15.0" fill="rgb(243,179,42)" rx="2" ry="2" />
+<text  x="876.53" y="319.5" ></text>
+</g>
+<g >
+<title>Plater.EventHandler Plater/Plater.lua:3887:1 (912 Bytes, 0.16%)</title><rect x="1252.9" y="405" width="2.5" height="15.0" fill="rgb(211,30,7)" rx="2" ry="2" />
+<text  x="1255.86" y="415.5" ></text>
+</g>
+<g >
+<title>SearchProvider:RefreshCacheAsync GlobalSearch/Internal/SearchProvider.lua:62:1 (12,696 Bytes, 2.27%)</title><rect x="268.5" y="373" width="35.8" height="15.0" fill="rgb(231,120,28)" rx="2" ry="2" />
+<text  x="271.48" y="383.5" >Sea..</text>
+</g>
+<g >
+<title>ScanGroupUnit WeakAuras/BuffTrigger2.lua:2001:6 (4,328 Bytes, 0.77%)</title><rect x="1562.3" y="373" width="12.2" height="15.0" fill="rgb(212,35,8)" rx="2" ry="2" />
+<text  x="1565.30" y="383.5" ></text>
+</g>
+<g >
+<title>GetOrCreateSubTable WeakAuras/BuffTrigger2.lua:149:6 (224 Bytes, 0.04%)</title><rect x="1500.9" y="245" width="0.6" height="15.0" fill="rgb(208,16,3)" rx="2" ry="2" />
+<text  x="1503.91" y="255.5" ></text>
+</g>
+<g >
+<title>AceTimer:ScheduleTimer CharacterNotes/Libs/AceTimer-3.0/AceTimer-3.0.lua:94:0 (728 Bytes, 0.13%)</title><rect x="1259.5" y="325" width="2.0" height="15.0" fill="rgb(249,205,49)" rx="2" ry="2" />
+<text  x="1262.46" y="335.5" ></text>
+</g>
+<g >
+<title>NovaWorldBuffs (174,888 Bytes, 31.27%)</title><rect x="392.5" y="421" width="494.0" height="15.0" fill="rgb(251,215,51)" rx="2" ry="2" />
+<text  x="395.47" y="431.5" >NovaWorldBuffs</text>
+</g>
+<g >
+<title>targeting:ZONE_CHANGED_NEW_AREA RXPGuides/Targeting.lua:1192:0 (216 Bytes, 0.04%)</title><rect x="1290.8" y="341" width="0.6" height="15.0" fill="rgb(233,129,30)" rx="2" ry="2" />
+<text  x="1293.76" y="351.5" ></text>
+</g>
+<g >
+<title>MultiUnitLoop WeakAuras/GenericTrigger.lua:1205:6 (128 Bytes, 0.02%)</title><rect x="1506.2" y="309" width="0.3" height="15.0" fill="rgb(252,217,51)" rx="2" ry="2" />
+<text  x="1509.18" y="319.5" ></text>
+</g>
+<g >
+<title>DBM:Debug DBM-Core/DBM-Core.lua:7248:1 (648 Bytes, 0.12%)</title><rect x="82.7" y="373" width="1.8" height="15.0" fill="rgb(215,48,11)" rx="2" ry="2" />
+<text  x="85.70" y="383.5" ></text>
+</g>
+<g >
+<title>LibSerialize:_PostDeserialize Auctionator/Libs/LibSerialize/LibSerialize.lua:1332:0 (144 Bytes, 0.03%)</title><rect x="856.0" y="309" width="0.4" height="15.0" fill="rgb(210,23,5)" rx="2" ry="2" />
+<text  x="859.01" y="319.5" ></text>
+</g>
+<g >
+<title>LibSerialize:_PostDeserialize Auctionator/Libs/LibSerialize/LibSerialize.lua:1332:0 (144 Bytes, 0.03%)</title><rect x="867.0" y="293" width="0.4" height="15.0" fill="rgb(210,23,5)" rx="2" ry="2" />
+<text  x="869.99" y="303.5" ></text>
+</g>
+<g >
+<title>(anonymous) Details/Libs/DF/loadconditions.lua:122:34 (129,676 Bytes, 23.19%)</title><rect x="886.5" y="405" width="366.4" height="15.0" fill="rgb(251,215,51)" rx="2" ry="2" />
+<text  x="889.53" y="415.5" >(anonymous) Details/Libs/DF/loadconditions.lua:12..</text>
+</g>
+<g >
+<title>Dispatch AdiBags/libs/CallbackHandler-1.0/CallbackHandler-1.0.lua:15:6 (728 Bytes, 0.13%)</title><rect x="1259.5" y="373" width="2.0" height="15.0" fill="rgb(244,180,43)" rx="2" ry="2" />
+<text  x="1262.46" y="383.5" ></text>
+</g>
+<g >
+<title>module:Schedule DBM-Core/modules/Scheduler.lua:271:0 (200 Bytes, 0.04%)</title><rect x="84.5" y="357" width="0.6" height="15.0" fill="rgb(221,76,18)" rx="2" ry="2" />
+<text  x="87.53" y="367.5" ></text>
+</g>
+<g >
+<title>targeting:UpdateTargetFrame RXPGuides/Targeting.lua:977:0 (144 Bytes, 0.03%)</title><rect x="1291.0" y="309" width="0.4" height="15.0" fill="rgb(211,30,7)" rx="2" ry="2" />
+<text  x="1293.96" y="319.5" ></text>
+</g>
+<g >
+<title>AceHook:UnhookAll AdiBags/libs/AceHook-3.0/AceHook-3.0.lua:476:0 (144 Bytes, 0.03%)</title><rect x="72.9" y="261" width="0.4" height="15.0" fill="rgb(253,223,53)" rx="2" ry="2" />
+<text  x="75.88" y="271.5" ></text>
+</g>
+<g >
+<title>Quartz (823 Bytes, 0.15%)</title><rect x="1259.5" y="421" width="2.3" height="15.0" fill="rgb(233,133,31)" rx="2" ry="2" />
+<text  x="1262.46" y="431.5" ></text>
+</g>
+<g >
+<title>NWB:config NovaWorldBuffs/Options.lua:3750:0 (288 Bytes, 0.05%)</title><rect x="876.2" y="277" width="0.8" height="15.0" fill="rgb(248,202,48)" rx="2" ry="2" />
+<text  x="879.17" y="287.5" ></text>
+</g>
+<g >
+<title>ScanMatchData WeakAuras/BuffTrigger2.lua:211:6 (568 Bytes, 0.10%)</title><rect x="1499.9" y="293" width="1.6" height="15.0" fill="rgb(218,61,14)" rx="2" ry="2" />
+<text  x="1502.94" y="303.5" ></text>
+</g>
+<g >
+<title>LibSpellRange-1.0 (252 Bytes, 0.05%)</title><rect x="390.5" y="421" width="0.7" height="15.0" fill="rgb(254,228,54)" rx="2" ry="2" />
+<text  x="393.52" y="431.5" ></text>
+</g>
+<g >
+<title>GL:after Gargul/Classes/Helpers.lua:1234:0 (1,092 Bytes, 0.20%)</title><rect x="125.9" y="357" width="3.1" height="15.0" fill="rgb(210,26,6)" rx="2" ry="2" />
+<text  x="128.88" y="367.5" ></text>
+</g>
+<g >
+<title>mod:OnEnable AdiBags/modules/ItemLevel.lua:106:0 (232 Bytes, 0.04%)</title><rect x="36.3" y="277" width="0.6" height="15.0" fill="rgb(253,225,53)" rx="2" ry="2" />
+<text  x="39.29" y="287.5" ></text>
+</g>
+<g >
+<title>Dispatch AdiBags/libs/CallbackHandler-1.0/CallbackHandler-1.0.lua:15:6 (1,248 Bytes, 0.22%)</title><rect x="304.3" y="357" width="3.6" height="15.0" fill="rgb(244,180,43)" rx="2" ry="2" />
+<text  x="307.35" y="367.5" ></text>
+</g>
+<g >
+<title>DBM:Schedule DBM-Core/DBM-Core.lua:2045:0 (200 Bytes, 0.04%)</title><rect x="84.5" y="373" width="0.6" height="15.0" fill="rgb(230,118,28)" rx="2" ry="2" />
+<text  x="87.53" y="383.5" ></text>
+</g>
+<g >
+<title>LibSerialize:_ReadTable Auctionator/Libs/LibSerialize/LibSerialize.lua:695:0 (1,396 Bytes, 0.25%)</title><rect x="863.0" y="117" width="4.0" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="866.05" y="127.5" ></text>
+</g>
+<g >
+<title>SpellsSearchProvider:IterateKnownSpells GlobalSearch/SearchProviders/SpellsSearchProvider.lua:61:0 (5,912 Bytes, 1.06%)</title><rect x="251.8" y="373" width="16.7" height="15.0" fill="rgb(229,112,26)" rx="2" ry="2" />
+<text  x="254.78" y="383.5" ></text>
+</g>
+<g >
+<title>NWB:OnCommReceived NovaWorldBuffs/NWBData.lua:46:0 (77,221 Bytes, 13.81%)</title><rect x="668.4" y="341" width="218.1" height="15.0" fill="rgb(226,100,24)" rx="2" ry="2" />
+<text  x="671.38" y="351.5" >NWB:OnCommReceived NovaWorld..</text>
+</g>
+<g >
+<title>SpellsSearchProvider:Fetch GlobalSearch/SearchProviders/SpellsSearchProvider.lua:17:0 (11,856 Bytes, 2.12%)</title><rect x="270.9" y="357" width="33.4" height="15.0" fill="rgb(237,150,35)" rx="2" ry="2" />
+<text  x="273.85" y="367.5" >Sp..</text>
+</g>
+<g >
+<title>target.? AdiBags/libs/CallbackHandler-1.0/CallbackHandler-1.0.lua:80:24 (232 Bytes, 0.04%)</title><rect x="26.4" y="261" width="0.7" height="15.0" fill="rgb(208,17,4)" rx="2" ry="2" />
+<text  x="29.43" y="271.5" ></text>
+</g>
+<g >
+<title>HealComm:GetHealAmountEx ClassicHealPrediction/libs/LibHealComm-4.0/LibHealComm-4.0.lua:625:0 (120 Bytes, 0.02%)</title><rect x="79.3" y="325" width="0.4" height="15.0" fill="rgb(239,156,37)" rx="2" ry="2" />
+<text  x="82.32" y="335.5" ></text>
+</g>
+<g >
+<title>meta.__index AdiBags/libs/CallbackHandler-1.0/CallbackHandler-1.0.lua:7:24 (184 Bytes, 0.03%)</title><rect x="48.8" y="229" width="0.5" height="15.0" fill="rgb(239,158,37)" rx="2" ry="2" />
+<text  x="51.81" y="239.5" ></text>
+</g>
+<g >
+<title>WeakAuras.ScanEvents WeakAuras/GenericTrigger.lua:789:0 (518 Bytes, 0.09%)</title><rect x="1581.5" y="389" width="1.4" height="15.0" fill="rgb(224,91,21)" rx="2" ry="2" />
+<text  x="1584.49" y="399.5" ></text>
+</g>
+<g >
+<title>copyHookTables Plater/Plater.lua:11064:8 (128,556 Bytes, 22.99%)</title><rect x="889.7" y="325" width="363.2" height="15.0" fill="rgb(230,119,28)" rx="2" ry="2" />
+<text  x="892.69" y="335.5" >copyHookTables Plater/Plater.lua:11064:8</text>
+</g>
+<g >
+<title>(anonymous) ExtendedCharacterStats/Modules/i18n/i18n.lua:48:29 (1,512 Bytes, 0.27%)</title><rect x="88.6" y="341" width="4.3" height="15.0" fill="rgb(243,175,42)" rx="2" ry="2" />
+<text  x="91.61" y="351.5" ></text>
+</g>
+<g >
+<title>LibSerialize:_ReadObject Auctionator/Libs/LibSerialize/LibSerialize.lua:655:0 (1,396 Bytes, 0.25%)</title><rect x="863.0" y="149" width="4.0" height="15.0" fill="rgb(221,77,18)" rx="2" ry="2" />
+<text  x="866.05" y="159.5" ></text>
+</g>
+<g >
+<title>(anonymous) Plater/libs/LibClassicDurations/core.lua:86:23 (1,560 Bytes, 0.28%)</title><rect x="385.8" y="405" width="4.4" height="15.0" fill="rgb(220,72,17)" rx="2" ry="2" />
+<text  x="388.78" y="415.5" ></text>
+</g>
+<g >
+<title>LibSerialize:_ClearReferences Auctionator/Libs/LibSerialize/LibSerialize.lua:643:0 (144 Bytes, 0.03%)</title><rect x="867.0" y="277" width="0.4" height="15.0" fill="rgb(241,168,40)" rx="2" ry="2" />
+<text  x="869.99" y="287.5" ></text>
+</g>
+<g >
+<title>ShadowedUnitFrames (127 Bytes, 0.02%)</title><rect x="1488.7" y="421" width="0.3" height="15.0" fill="rgb(246,191,45)" rx="2" ry="2" />
+<text  x="1491.66" y="431.5" ></text>
+</g>
+<g >
+<title>LibSerialize:_ReadTable Auctionator/Libs/LibSerialize/LibSerialize.lua:695:0 (2,284 Bytes, 0.41%)</title><rect x="860.5" y="245" width="6.5" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="863.54" y="255.5" ></text>
+</g>
+<g >
+<title>GetOrCreateSubTable WeakAuras/BuffTrigger2.lua:149:6 (288 Bytes, 0.05%)</title><rect x="1499.1" y="293" width="0.8" height="15.0" fill="rgb(208,16,3)" rx="2" ry="2" />
+<text  x="1502.13" y="303.5" ></text>
+</g>
+<g >
+<title>regfunc AdiBags/libs/CallbackHandler-1.0/CallbackHandler-1.0.lua:109:14 (728 Bytes, 0.13%)</title><rect x="1259.5" y="357" width="2.0" height="15.0" fill="rgb(206,8,2)" rx="2" ry="2" />
+<text  x="1262.46" y="367.5" ></text>
+</g>
+<g >
+<title>LibSerialize:_AddReference Auctionator/Libs/LibSerialize/LibSerialize.lua:635:0 (480 Bytes, 0.09%)</title><rect x="865.2" y="101" width="1.4" height="15.0" fill="rgb(212,32,7)" rx="2" ry="2" />
+<text  x="868.22" y="111.5" ></text>
+</g>
+<g >
+<title>LibDeflate:DecompressDeflate DBM-Core/Libs/LibDeflate/LibDeflate.lua:2742:0 (5,370 Bytes, 0.96%)</title><rect x="838.0" y="325" width="15.1" height="15.0" fill="rgb(245,186,44)" rx="2" ry="2" />
+<text  x="840.97" y="335.5" ></text>
+</g>
+<g >
+<title>NWB:throddleEventByFunc NovaWorldBuffs/NWBData.lua:2871:0 (240 Bytes, 0.04%)</title><rect x="648.9" y="389" width="0.7" height="15.0" fill="rgb(243,179,42)" rx="2" ry="2" />
+<text  x="651.89" y="399.5" ></text>
+</g>
+<g >
+<title>LibSerialize:_ReadPair Auctionator/Libs/LibSerialize/LibSerialize.lua:760:0 (1,396 Bytes, 0.25%)</title><rect x="863.0" y="165" width="4.0" height="15.0" fill="rgb(252,218,52)" rx="2" ry="2" />
+<text  x="866.05" y="175.5" ></text>
+</g>
+<g >
+<title>UnitAuraEventHandler Plater/Plater_Auras.lua:540:29 (1,032 Bytes, 0.18%)</title><rect x="1256.5" y="405" width="3.0" height="15.0" fill="rgb(211,31,7)" rx="2" ry="2" />
+<text  x="1259.54" y="415.5" ></text>
+</g>
+<g >
+<title>BuffTrigger.GetTriggerConditions WeakAuras/BuffTrigger2.lua:3476:0 (6,016 Bytes, 1.08%)</title><rect x="1510.1" y="309" width="17.0" height="15.0" fill="rgb(238,155,37)" rx="2" ry="2" />
+<text  x="1513.11" y="319.5" ></text>
+</g>
+<g >
+<title>NWB:receivedData NovaWorldBuffs/NWBData.lua:1416:0 (10,007 Bytes, 1.79%)</title><rect x="858.3" y="325" width="28.2" height="15.0" fill="rgb(224,88,21)" rx="2" ry="2" />
+<text  x="861.26" y="335.5" >N..</text>
+</g>
+<g >
+<title>new CharacterNotes/Libs/AceTimer-3.0/AceTimer-3.0.lua:32:6 (728 Bytes, 0.13%)</title><rect x="1259.5" y="309" width="2.0" height="15.0" fill="rgb(247,194,46)" rx="2" ry="2" />
+<text  x="1262.46" y="319.5" ></text>
+</g>
+<g >
+<title>SpellsSearchProvider:IterateSpellTabs GlobalSearch/SearchProviders/SpellsSearchProvider.lua:99:0 (5,848 Bytes, 1.05%)</title><rect x="147.8" y="373" width="16.6" height="15.0" fill="rgb(247,195,46)" rx="2" ry="2" />
+<text  x="150.83" y="383.5" ></text>
+</g>
+<g >
+<title>tryAnchorAgain WeakAuras/WeakAuras.lua:5633:6 (2,496 Bytes, 0.45%)</title><rect x="1582.9" y="389" width="7.1" height="15.0" fill="rgb(236,144,34)" rx="2" ry="2" />
+<text  x="1585.95" y="399.5" ></text>
+</g>
+<g >
+<title>UpdateMinimap NovaWorldBuffs/Lib/HereBeDragons/HereBeDragons-Pins-2.0.lua:474:6 (1,248 Bytes, 0.22%)</title><rect x="304.3" y="341" width="3.6" height="15.0" fill="rgb(206,6,1)" rx="2" ry="2" />
+<text  x="307.35" y="351.5" ></text>
+</g>
+<g >
+<title>UpdateUnitAuraCacheData Plater/Plater_Auras.lua:585:26 (848 Bytes, 0.15%)</title><rect x="1257.1" y="389" width="2.4" height="15.0" fill="rgb(216,52,12)" rx="2" ry="2" />
+<text  x="1260.06" y="399.5" ></text>
+</g>
+<g >
+<title>ScanUnit WeakAuras/BuffTrigger2.lua:2068:6 (4,328 Bytes, 0.77%)</title><rect x="1562.3" y="389" width="12.2" height="15.0" fill="rgb(220,69,16)" rx="2" ry="2" />
+<text  x="1565.30" y="399.5" ></text>
+</g>
+<g >
+<title>SearchProvider:RefreshCacheAsync GlobalSearch/Internal/SearchProvider.lua:62:1 (36,859 Bytes, 6.59%)</title><rect x="164.4" y="405" width="104.1" height="15.0" fill="rgb(231,120,28)" rx="2" ry="2" />
+<text  x="167.35" y="415.5" >SearchProvid..</text>
+</g>
+<g >
+<title>UpdateSpells WeakAuras/Libs/LibSpellRange-1.0/LibSpellRange-1.0.lua:181:6 (252 Bytes, 0.05%)</title><rect x="390.5" y="405" width="0.7" height="15.0" fill="rgb(251,213,51)" rx="2" ry="2" />
+<text  x="393.52" y="415.5" ></text>
+</g>
+<g >
+<title>AceTimer:ScheduleTimer CharacterNotes/Libs/AceTimer-3.0/AceTimer-3.0.lua:94:0 (728 Bytes, 0.13%)</title><rect x="1489.9" y="373" width="2.1" height="15.0" fill="rgb(249,205,49)" rx="2" ry="2" />
+<text  x="1492.94" y="383.5" ></text>
+</g>
+<g >
+<title>ScanUnitWithFilter WeakAuras/BuffTrigger2.lua:1871:23 (3,968 Bytes, 0.71%)</title><rect x="1563.3" y="357" width="11.2" height="15.0" fill="rgb(232,125,29)" rx="2" ry="2" />
+<text  x="1566.31" y="367.5" ></text>
+</g>
+<g >
+<title>Plater (132,012 Bytes, 23.60%)</title><rect x="886.5" y="421" width="373.0" height="15.0" fill="rgb(234,134,32)" rx="2" ry="2" />
+<text  x="889.53" y="431.5" >Plater</text>
+</g>
+<g >
+<title>NWB:convertKeys NovaWorldBuffs/NWBData.lua:2237:0 (3,640 Bytes, 0.65%)</title><rect x="874.7" y="293" width="10.3" height="15.0" fill="rgb(243,179,42)" rx="2" ry="2" />
+<text  x="877.71" y="303.5" ></text>
+</g>
+<g >
+<title>UpdateMatchData WeakAuras/BuffTrigger2.lua:423:6 (3,872 Bytes, 0.69%)</title><rect x="1563.6" y="341" width="10.9" height="15.0" fill="rgb(252,216,51)" rx="2" ry="2" />
+<text  x="1566.58" y="351.5" ></text>
+</g>
+<g >
+<title>module:Run GlobalSearch/Modules/TaskQueue.lua:114:0 (2,400 Bytes, 0.43%)</title><rect x="140.7" y="389" width="6.8" height="15.0" fill="rgb(254,225,53)" rx="2" ry="2" />
+<text  x="143.74" y="399.5" ></text>
+</g>
+<g >
+<title>EventHandler WeakAuras/BuffTrigger2.lua:2180:6 (4,616 Bytes, 0.83%)</title><rect x="1561.5" y="405" width="13.0" height="15.0" fill="rgb(247,195,46)" rx="2" ry="2" />
+<text  x="1564.48" y="415.5" ></text>
+</g>
+<g >
+<title>Plater.HookLoadCallback Plater/Plater.lua:4143:2 (129,676 Bytes, 23.19%)</title><rect x="886.5" y="389" width="366.4" height="15.0" fill="rgb(234,136,32)" rx="2" ry="2" />
+<text  x="889.53" y="399.5" >Plater.HookLoadCallback Plater/Plater.lua:4143:2</text>
+</g>
+<g >
+<title>(anonymous) WeakAuras/WeakAuras.lua:1890:33 (22,841 Bytes, 4.08%)</title><rect x="1497.0" y="405" width="64.5" height="15.0" fill="rgb(243,178,42)" rx="2" ry="2" />
+<text  x="1499.96" y="415.5" >(anonym..</text>
+</g>
+<g >
+<title>CreateReader DBM-Core/Libs/LibDeflate/LibDeflate.lua:2127:6 (1,032 Bytes, 0.18%)</title><rect x="841.1" y="277" width="2.9" height="15.0" fill="rgb(213,38,9)" rx="2" ry="2" />
+<text  x="844.11" y="287.5" ></text>
+</g>
+<g >
+<title>target.? AdiBags/libs/CallbackHandler-1.0/CallbackHandler-1.0.lua:80:24 (824 Bytes, 0.15%)</title><rect x="34.0" y="261" width="2.3" height="15.0" fill="rgb(208,17,4)" rx="2" ry="2" />
+<text  x="36.96" y="271.5" ></text>
+</g>
+<g >
+<title>Plater.ScheduleZoneChangeHook Plater/Plater.lua:1956:1 (64 Bytes, 0.01%)</title><rect x="1255.1" y="373" width="0.1" height="15.0" fill="rgb(235,141,33)" rx="2" ry="2" />
+<text  x="1258.05" y="383.5" ></text>
+</g>
+<g >
+<title>GetOrCreateSubTable WeakAuras/BuffTrigger2.lua:149:6 (288 Bytes, 0.05%)</title><rect x="1499.1" y="261" width="0.8" height="15.0" fill="rgb(208,16,3)" rx="2" ry="2" />
+<text  x="1502.13" y="271.5" ></text>
+</g>
+<g >
+<title>LibSerialize:_AddReference Auctionator/Libs/LibSerialize/LibSerialize.lua:635:0 (80 Bytes, 0.01%)</title><rect x="855.4" y="245" width="0.2" height="15.0" fill="rgb(212,32,7)" rx="2" ry="2" />
+<text  x="858.42" y="255.5" ></text>
+</g>
+<g >
+<title>Units:CheckPlayerZone ShadowedUnitFrames/modules/units.lua:1290:0 (127 Bytes, 0.02%)</title><rect x="1488.7" y="389" width="0.3" height="15.0" fill="rgb(209,21,5)" rx="2" ry="2" />
+<text  x="1491.66" y="399.5" ></text>
+</g>
+<g >
+<title>safecall AdiBags/libs/AceAddon-3.0/AceAddon-3.0.lua:61:6 (9,913 Bytes, 1.77%)</title><rect x="44.9" y="309" width="28.0" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="47.87" y="319.5" >s..</text>
+</g>
+<g >
+<title>eventFunctions.ZONE_CHANGED_NEW_AREA Plater/Plater.lua:2258:26 (136 Bytes, 0.02%)</title><rect x="1255.1" y="389" width="0.3" height="15.0" fill="rgb(241,165,39)" rx="2" ry="2" />
+<text  x="1258.05" y="399.5" ></text>
+</g>
+<g >
+<title>LibSerialize:_ReadPair Auctionator/Libs/LibSerialize/LibSerialize.lua:760:0 (2,076 Bytes, 0.37%)</title><rect x="861.1" y="229" width="5.9" height="15.0" fill="rgb(252,218,52)" rx="2" ry="2" />
+<text  x="864.13" y="239.5" ></text>
+</g>
+<g >
+<title>uid AdiBags/libs/AceHook-3.0/AceHook-3.0.lua:100:8 (648 Bytes, 0.12%)</title><rect x="82.7" y="341" width="1.8" height="15.0" fill="rgb(224,88,21)" rx="2" ry="2" />
+<text  x="85.70" y="351.5" ></text>
+</g>
+<g >
+<title>Private.LoadDisplays WeakAuras/WeakAuras.lua:1982:0 (10,472 Bytes, 1.87%)</title><rect x="1497.7" y="357" width="29.6" height="15.0" fill="rgb(236,145,34)" rx="2" ry="2" />
+<text  x="1500.72" y="367.5" >Pr..</text>
+</g>
+<g >
+<title>timer.callback CharacterNotes/Libs/AceTimer-3.0/AceTimer-3.0.lua:50:18 (2,496 Bytes, 0.45%)</title><rect x="1582.9" y="405" width="7.1" height="15.0" fill="rgb(229,114,27)" rx="2" ry="2" />
+<text  x="1585.95" y="415.5" ></text>
+</g>
+<g >
+<title>(anonymous) WeakAuras/WeakAuras.lua:1318:33 (2,811 Bytes, 0.50%)</title><rect x="1489.0" y="405" width="8.0" height="15.0" fill="rgb(226,96,23)" rx="2" ry="2" />
+<text  x="1492.01" y="415.5" ></text>
+</g>
+<g >
+<title>GlobalSearch (58,147 Bytes, 10.40%)</title><rect x="140.1" y="421" width="164.2" height="15.0" fill="rgb(219,68,16)" rx="2" ry="2" />
+<text  x="143.08" y="431.5" >GlobalSearch</text>
+</g>
+<g >
+<title>mod:OnEnable AdiBags/modules/BankSwitcher.lua:35:0 (232 Bytes, 0.04%)</title><rect x="26.4" y="277" width="0.7" height="15.0" fill="rgb(253,222,53)" rx="2" ry="2" />
+<text  x="29.43" y="287.5" ></text>
+</g>
+<g >
+<title>UpdateMinimapZoom Questie/Libs/HereBeDragons/HereBeDragons-Pins-2.0.lua:330:6 (1,248 Bytes, 0.22%)</title><rect x="339.4" y="325" width="3.5" height="15.0" fill="rgb(209,20,4)" rx="2" ry="2" />
+<text  x="342.35" y="335.5" ></text>
+</g>
+<g >
+<title>AceAddon:EnableAddon AdiBags/libs/AceAddon-3.0/AceAddon-3.0.lua:516:0 (12,345 Bytes, 2.21%)</title><rect x="10.0" y="309" width="34.9" height="15.0" fill="rgb(205,0,0)" rx="2" ry="2" />
+<text  x="13.00" y="319.5" >Ac..</text>
+</g>
+<g >
+<title>mod:OnEnable AdiBags/modules/FilterOverride.lua:116:0 (824 Bytes, 0.15%)</title><rect x="34.0" y="277" width="2.3" height="15.0" fill="rgb(239,160,38)" rx="2" ry="2" />
+<text  x="36.96" y="287.5" ></text>
+</g>
+<g >
+<title>(anonymous) Questie/Modules/Quest/QuestieQuest.lua:365:37 (7,680 Bytes, 1.37%)</title><rect x="1267.6" y="405" width="21.7" height="15.0" fill="rgb(208,17,4)" rx="2" ry="2" />
+<text  x="1270.59" y="415.5" >(..</text>
+</g>
+<g >
+<title>bucketLib:RegisterBucketEvent AdiBags/core/EventHandlers.lua:120:0 (1,393 Bytes, 0.25%)</title><rect x="28.4" y="261" width="3.9" height="15.0" fill="rgb(224,87,20)" rx="2" ry="2" />
+<text  x="31.40" y="271.5" ></text>
+</g>
+<g >
+<title>LoadAura WeakAuras/BuffTrigger2.lua:2561:6 (1,208 Bytes, 0.22%)</title><rect x="1498.1" y="325" width="3.4" height="15.0" fill="rgb(213,40,9)" rx="2" ry="2" />
+<text  x="1501.13" y="335.5" ></text>
+</g>
+<g >
+<title>CreateReader Auctionator/Libs/LibSerialize/LibSerialize.lua:490:6 (424 Bytes, 0.08%)</title><rect x="853.4" y="293" width="1.2" height="15.0" fill="rgb(219,68,16)" rx="2" ry="2" />
+<text  x="856.41" y="303.5" ></text>
+</g>
+<g >
+<title>DBM:LOADING_SCREEN_DISABLED DBM-Core/DBM-Core.lua:3880:1 (848 Bytes, 0.15%)</title><rect x="82.7" y="389" width="2.4" height="15.0" fill="rgb(239,157,37)" rx="2" ry="2" />
+<text  x="85.70" y="399.5" ></text>
+</g>
+<g >
+<title>MacroToolkit (436 Bytes, 0.08%)</title><rect x="391.2" y="421" width="1.3" height="15.0" fill="rgb(253,222,53)" rx="2" ry="2" />
+<text  x="394.23" y="431.5" ></text>
+</g>
+<g >
+<title>registry:Fire AdiBags/libs/CallbackHandler-1.0/CallbackHandler-1.0.lua:49:1 (1,248 Bytes, 0.22%)</title><rect x="304.3" y="373" width="3.6" height="15.0" fill="rgb(215,48,11)" rx="2" ry="2" />
+<text  x="307.35" y="383.5" ></text>
+</g>
+<g >
+<title>new CharacterNotes/Libs/AceTimer-3.0/AceTimer-3.0.lua:32:6 (728 Bytes, 0.13%)</title><rect x="1489.9" y="357" width="2.1" height="15.0" fill="rgb(247,194,46)" rx="2" ry="2" />
+<text  x="1492.94" y="367.5" ></text>
+</g>
+<g >
+<title>addon.UpdateItemFrame RXPGuides/ActiveItemFrame.lua:240:0 (72 Bytes, 0.01%)</title><rect x="1290.6" y="309" width="0.2" height="15.0" fill="rgb(207,12,3)" rx="2" ry="2" />
+<text  x="1293.56" y="319.5" ></text>
+</g>
+<g >
+<title>Private.TraverseParents WeakAuras/WeakAuras.lua:6299:2 (11,488 Bytes, 2.05%)</title><rect x="1527.3" y="357" width="32.5" height="15.0" fill="rgb(211,27,6)" rx="2" ry="2" />
+<text  x="1530.31" y="367.5" >Pr..</text>
+</g>
+<g >
+<title>registry:Fire AdiBags/libs/CallbackHandler-1.0/CallbackHandler-1.0.lua:49:1 (12,392 Bytes, 2.22%)</title><rect x="307.9" y="373" width="35.0" height="15.0" fill="rgb(215,48,11)" rx="2" ry="2" />
+<text  x="310.87" y="383.5" >re..</text>
+</g>
+<g >
+<title>Private.UnloadDisplays WeakAuras/WeakAuras.lua:2001:0 (609 Bytes, 0.11%)</title><rect x="1559.8" y="357" width="1.7" height="15.0" fill="rgb(229,114,27)" rx="2" ry="2" />
+<text  x="1562.76" y="367.5" ></text>
+</g>
+<g >
+<title>GL:after Gargul/Classes/Helpers.lua:1234:0 (968 Bytes, 0.17%)</title><rect x="137.3" y="357" width="2.8" height="15.0" fill="rgb(210,26,6)" rx="2" ry="2" />
+<text  x="140.35" y="367.5" ></text>
+</g>
+<g >
+<title>NWB:explode NovaWorldBuffs/NovaWorldBuffs.lua:4815:0 (652 Bytes, 0.12%)</title><rect x="856.4" y="325" width="1.9" height="15.0" fill="rgb(205,0,0)" rx="2" ry="2" />
+<text  x="859.41" y="335.5" ></text>
+</g>
+<g >
+<title>hook AdiBags/libs/AceHook-3.0/AceHook-3.0.lua:118:0 (3,024 Bytes, 0.54%)</title><rect x="10.0" y="213" width="8.5" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="13.00" y="223.5" ></text>
+</g>
+<g >
+<title>(anonymous) Auctionator/Libs/LibSerialize/LibSerialize.lua:847:41 (207 Bytes, 0.04%)</title><rect x="855.4" y="277" width="0.6" height="15.0" fill="rgb(231,123,29)" rx="2" ry="2" />
+<text  x="858.42" y="287.5" ></text>
+</g>
+<g >
+<title>RegisterBucket AdiBags/core/EventHandlers.lua:67:6 (1,577 Bytes, 0.28%)</title><rect x="44.9" y="261" width="4.4" height="15.0" fill="rgb(249,204,48)" rx="2" ry="2" />
+<text  x="47.87" y="271.5" ></text>
+</g>
+<g >
+<title>registry:Fire AdiBags/libs/CallbackHandler-1.0/CallbackHandler-1.0.lua:49:1 (70,124 Bytes, 12.54%)</title><rect x="1290.6" y="389" width="198.1" height="15.0" fill="rgb(215,48,11)" rx="2" ry="2" />
+<text  x="1293.56" y="399.5" >registry:Fire AdiBags/lib..</text>
+</g>
+<g >
+<title>QuestLogCache.TestGameCache Questie/Modules/Quest/QuestLogCache.lua:265:0 (7,680 Bytes, 1.37%)</title><rect x="1267.6" y="373" width="21.7" height="15.0" fill="rgb(217,57,13)" rx="2" ry="2" />
+<text  x="1270.59" y="383.5" >Q..</text>
+</g>
+<g >
+<title>Private.GetTriggerConditions WeakAuras/WeakAuras.lua:3973:0 (7,224 Bytes, 1.29%)</title><rect x="1506.9" y="325" width="20.4" height="15.0" fill="rgb(216,53,12)" rx="2" ry="2" />
+<text  x="1509.90" y="335.5" ></text>
+</g>
+<g >
+<title>(anonymous) Gargul/Classes/Events.lua:165:14 (5,140 Bytes, 0.92%)</title><rect x="125.6" y="389" width="14.5" height="15.0" fill="rgb(231,120,28)" rx="2" ry="2" />
+<text  x="128.56" y="399.5" ></text>
+</g>
+<g >
+<title>createHook AdiBags/libs/AceHook-3.0/AceHook-3.0.lua:82:0 (3,024 Bytes, 0.54%)</title><rect x="10.0" y="197" width="8.5" height="15.0" fill="rgb(210,26,6)" rx="2" ry="2" />
+<text  x="13.00" y="207.5" ></text>
+</g>
+<g >
+<title>LibSerialize:_ClearReferences Auctionator/Libs/LibSerialize/LibSerialize.lua:643:0 (144 Bytes, 0.03%)</title><rect x="856.0" y="293" width="0.4" height="15.0" fill="rgb(241,168,40)" rx="2" ry="2" />
+<text  x="859.01" y="303.5" ></text>
+</g>
+<g >
+<title>Data:GetMP5WhileCasting ExtendedCharacterStats/Modules/Data/MP5.lua:98:0 (4,656 Bytes, 0.83%)</title><rect x="92.9" y="309" width="13.1" height="15.0" fill="rgb(215,50,11)" rx="2" ry="2" />
+<text  x="95.88" y="319.5" ></text>
+</g>
+<g >
+<title>LibSerialize:_AddReference Auctionator/Libs/LibSerialize/LibSerialize.lua:635:0 (80 Bytes, 0.01%)</title><rect x="860.9" y="229" width="0.2" height="15.0" fill="rgb(212,32,7)" rx="2" ry="2" />
+<text  x="863.90" y="239.5" ></text>
+</g>
+<g >
+<title>tagPool.? ShadowedUnitFrames/modules/tags.lua:219:17 (84 Bytes, 0.02%)</title><rect x="1488.8" y="341" width="0.2" height="15.0" fill="rgb(232,126,30)" rx="2" ry="2" />
+<text  x="1491.78" y="351.5" ></text>
+</g>
+<g >
+<title>tracker:PLAYER_ENTERING_WORLD RXPGuides/LevelingTracker.lua:388:0 (704 Bytes, 0.13%)</title><rect x="1486.7" y="341" width="2.0" height="15.0" fill="rgb(233,129,30)" rx="2" ry="2" />
+<text  x="1489.67" y="351.5" ></text>
+</g>
+<g >
+<title>Data:GetMP5FromItems ExtendedCharacterStats/Modules/Data/MP5.lua:12:0 (4,656 Bytes, 0.83%)</title><rect x="106.0" y="309" width="13.2" height="15.0" fill="rgb(244,180,43)" rx="2" ry="2" />
+<text  x="109.03" y="319.5" ></text>
+</g>
+<g >
+<title>DBM:PLAYER_ENTERING_WORLD DBM-Core/DBM-Core.lua:6833:1 (368 Bytes, 0.07%)</title><rect x="85.1" y="389" width="1.0" height="15.0" fill="rgb(228,108,25)" rx="2" ry="2" />
+<text  x="88.10" y="399.5" ></text>
+</g>
+<g >
+<title>Dispatch AdiBags/libs/CallbackHandler-1.0/CallbackHandler-1.0.lua:15:6 (70,124 Bytes, 12.54%)</title><rect x="1290.6" y="373" width="198.1" height="15.0" fill="rgb(244,180,43)" rx="2" ry="2" />
+<text  x="1293.56" y="383.5" >Dispatch AdiBags/libs/Cal..</text>
+</g>
+<g >
+<title>UpdateMinimapPins Questie/Libs/HereBeDragons/HereBeDragons-Pins-2.0.lua:193:6 (11,144 Bytes, 1.99%)</title><rect x="307.9" y="325" width="31.5" height="15.0" fill="rgb(235,139,33)" rx="2" ry="2" />
+<text  x="310.87" y="335.5" >Up..</text>
+</g>
+<g >
+<title>LibClassicDurations (1,560 Bytes, 0.28%)</title><rect x="385.8" y="421" width="4.4" height="15.0" fill="rgb(244,180,43)" rx="2" ry="2" />
+<text  x="388.78" y="431.5" ></text>
+</g>
+<g >
+<title>mod:OnEnable AdiBags/modules/Junk.lua:82:0 (1,752 Bytes, 0.31%)</title><rect x="36.9" y="277" width="5.0" height="15.0" fill="rgb(242,171,41)" rx="2" ry="2" />
+<text  x="39.94" y="287.5" ></text>
+</g>
+<g >
+<title>module:StartTickerIfNotRunning GlobalSearch/Modules/TaskQueue.lua:105:0 (232 Bytes, 0.04%)</title><rect x="140.1" y="293" width="0.6" height="15.0" fill="rgb(250,207,49)" rx="2" ry="2" />
+<text  x="143.08" y="303.5" ></text>
+</g>
+<g >
+<title>DBM:COMBAT_LOG_EVENT_UNFILTERED DBM-Core/DBM-Core.lua:1515:1 (843 Bytes, 0.15%)</title><rect x="80.3" y="389" width="2.4" height="15.0" fill="rgb(224,91,21)" rx="2" ry="2" />
+<text  x="83.32" y="399.5" ></text>
+</g>
+<g >
+<title>(anonymous) GlobalSearch/SearchProviders/SpellsSearchProvider.lua:62:23 (5,960 Bytes, 1.07%)</title><rect x="147.5" y="389" width="16.9" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="150.52" y="399.5" ></text>
+</g>
+<g >
+<title>_MP5:GetMP5ValueOnItems ExtendedCharacterStats/Modules/Data/MP5.lua:19:0 (4,656 Bytes, 0.83%)</title><rect x="106.0" y="293" width="13.2" height="15.0" fill="rgb(221,75,18)" rx="2" ry="2" />
+<text  x="109.03" y="303.5" ></text>
+</g>
+<g >
+<title>NWB:ticker NovaWorldBuffs/NovaWorldBuffs.lua:654:0 (4,608 Bytes, 0.82%)</title><rect x="655.4" y="389" width="13.0" height="15.0" fill="rgb(251,214,51)" rx="2" ry="2" />
+<text  x="658.36" y="399.5" ></text>
+</g>
+<g >
+<title>worldmapProvider:RemoveAllData Questie/Libs/HereBeDragons/HereBeDragons-Pins-2.0.lua:363:0 (12,264 Bytes, 2.19%)</title><rect x="351.1" y="357" width="34.7" height="15.0" fill="rgb(229,111,26)" rx="2" ry="2" />
+<text  x="354.13" y="367.5" >wo..</text>
+</g>
+<g >
+<title>postponeAnchor WeakAuras/WeakAuras.lua:5657:6 (2,352 Bytes, 0.42%)</title><rect x="1583.4" y="341" width="6.6" height="15.0" fill="rgb(229,112,26)" rx="2" ry="2" />
+<text  x="1586.36" y="351.5" ></text>
+</g>
+<g >
+<title>Private.ActivateAuraEnvironment WeakAuras/AuraEnvironment.lua:278:0 (120 Bytes, 0.02%)</title><rect x="1502.1" y="309" width="0.3" height="15.0" fill="rgb(233,129,31)" rx="2" ry="2" />
+<text  x="1505.06" y="319.5" ></text>
+</g>
+<g >
+<title>all (559,291 Bytes, 100%)</title><rect x="10.0" y="437" width="1580.0" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="13.00" y="447.5" ></text>
+</g>
+<g >
+<title>AdiBags (22,402 Bytes, 4.01%)</title><rect x="10.0" y="421" width="63.3" height="15.0" fill="rgb(208,14,3)" rx="2" ry="2" />
+<text  x="13.00" y="431.5" >AdiBags</text>
+</g>
+<g >
+<title>target.? AdiBags/libs/CallbackHandler-1.0/CallbackHandler-1.0.lua:80:24 (1,056 Bytes, 0.19%)</title><rect x="41.9" y="261" width="3.0" height="15.0" fill="rgb(208,17,4)" rx="2" ry="2" />
+<text  x="44.89" y="271.5" ></text>
+</g>
+<g >
+<title>table.copy Details/Libs/DF/fw.lua:792:0 (119,088 Bytes, 21.29%)</title><rect x="916.4" y="309" width="336.5" height="15.0" fill="rgb(243,179,42)" rx="2" ry="2" />
+<text  x="919.44" y="319.5" >table.copy Details/Libs/DF/fw.lua:792:0</text>
+</g>
+<g >
+<title>LibSerialize:_ReadInt Auctionator/Libs/LibSerialize/LibSerialize.lua:754:0 (148 Bytes, 0.03%)</title><rect x="866.6" y="53" width="0.4" height="15.0" fill="rgb(209,21,5)" rx="2" ry="2" />
+<text  x="869.57" y="63.5" ></text>
+</g>
+<g >
+<title>AceHook:SecureHook AdiBags/libs/AceHook-3.0/AceHook-3.0.lua:335:0 (2,560 Bytes, 0.46%)</title><rect x="18.5" y="229" width="7.3" height="15.0" fill="rgb(251,212,50)" rx="2" ry="2" />
+<text  x="21.54" y="239.5" ></text>
+</g>
+<g >
+<title>QuestieLib.tpack Questie/Modules/Libs/QuestieLib.lua:588:0 (128 Bytes, 0.02%)</title><rect x="1290.2" y="357" width="0.4" height="15.0" fill="rgb(243,177,42)" rx="2" ry="2" />
+<text  x="1293.19" y="367.5" ></text>
+</g>
+<g >
+<title>SetTimer Plater/libs/LibClassicDurations/core.lua:395:6 (1,560 Bytes, 0.28%)</title><rect x="385.8" y="357" width="4.4" height="15.0" fill="rgb(232,127,30)" rx="2" ry="2" />
+<text  x="388.78" y="367.5" ></text>
+</g>
+<g >
+<title>(anonymous) GlobalSearch/SearchProviders/SpellsSearchProvider.lua:18:23 (5,960 Bytes, 1.07%)</title><rect x="147.5" y="405" width="16.9" height="15.0" fill="rgb(248,199,47)" rx="2" ry="2" />
+<text  x="150.52" y="415.5" ></text>
+</g>
+<g >
+<title>LibDeflate:CreateCodec DBM-Core/Libs/LibDeflate/LibDeflate.lua:2921:0 (55,890 Bytes, 9.99%)</title><rect x="679.5" y="293" width="157.8" height="15.0" fill="rgb(241,167,39)" rx="2" ry="2" />
+<text  x="682.45" y="303.5" >LibDeflate:CreateCod..</text>
+</g>
+<g >
+<title>DBM:ZONE_CHANGED_NEW_AREA DBM-Core/DBM-Core.lua:3902:1 (875 Bytes, 0.16%)</title><rect x="86.1" y="389" width="2.5" height="15.0" fill="rgb(232,124,29)" rx="2" ry="2" />
+<text  x="89.14" y="399.5" ></text>
+</g>
+<g >
+<title>OnEvent MacroToolkit/modules/showtooltipMock.lua:72:6 (436 Bytes, 0.08%)</title><rect x="391.2" y="405" width="1.3" height="15.0" fill="rgb(250,208,49)" rx="2" ry="2" />
+<text  x="394.23" y="415.5" ></text>
+</g>
+<g >
+<title>HealComm:GetHealAmountEx ClassicHealPrediction/libs/LibHealComm-4.0/LibHealComm-4.0.lua:625:0 (120 Bytes, 0.02%)</title><rect x="79.7" y="325" width="0.3" height="15.0" fill="rgb(239,156,37)" rx="2" ry="2" />
+<text  x="82.66" y="335.5" ></text>
+</g>
+<g >
+<title>GetOrCreateSubTable WeakAuras/BuffTrigger2.lua:149:6 (296 Bytes, 0.05%)</title><rect x="1500.7" y="261" width="0.8" height="15.0" fill="rgb(208,16,3)" rx="2" ry="2" />
+<text  x="1503.71" y="271.5" ></text>
+</g>
+<g >
+<title>AceTimer:ScheduleTimer CharacterNotes/Libs/AceTimer-3.0/AceTimer-3.0.lua:94:0 (1,456 Bytes, 0.26%)</title><rect x="1585.9" y="325" width="4.1" height="15.0" fill="rgb(249,205,49)" rx="2" ry="2" />
+<text  x="1588.89" y="335.5" ></text>
+</g>
+<g >
+<title>updateHealPrediction ClassicHealPrediction/ClassicHealPrediction.lua:341:6 (120 Bytes, 0.02%)</title><rect x="79.7" y="357" width="0.3" height="15.0" fill="rgb(221,74,17)" rx="2" ry="2" />
+<text  x="82.66" y="367.5" ></text>
+</g>
+<g >
+<title>_QuestEventHandler:OnEvent Questie/Modules/Quest/QuestEventHandler.lua:529:0 (448 Bytes, 0.08%)</title><rect x="1289.3" y="405" width="1.3" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="1292.29" y="415.5" ></text>
+</g>
+<g >
+<title>AddScanFuncs WeakAuras/BuffTrigger2.lua:2072:6 (1,080 Bytes, 0.19%)</title><rect x="1498.5" y="309" width="3.0" height="15.0" fill="rgb(226,100,24)" rx="2" ry="2" />
+<text  x="1501.49" y="319.5" ></text>
+</g>
+<g >
+<title>updateHealPrediction ClassicHealPrediction/ClassicHealPrediction.lua:341:6 (120 Bytes, 0.02%)</title><rect x="79.3" y="357" width="0.4" height="15.0" fill="rgb(221,74,17)" rx="2" ry="2" />
+<text  x="82.32" y="367.5" ></text>
+</g>
+<g >
+<title>ReadBytes Auctionator/Libs/LibSerialize/LibSerialize.lua:497:10 (148 Bytes, 0.03%)</title><rect x="866.6" y="37" width="0.4" height="15.0" fill="rgb(233,130,31)" rx="2" ry="2" />
+<text  x="869.57" y="47.5" ></text>
+</g>
+<g >
+<title>Dispatch AdiBags/libs/CallbackHandler-1.0/CallbackHandler-1.0.lua:15:6 (2,056 Bytes, 0.37%)</title><rect x="1261.8" y="373" width="5.8" height="15.0" fill="rgb(244,180,43)" rx="2" ry="2" />
+<text  x="1264.79" y="383.5" ></text>
+</g>
+<g >
+<title>UpdateMinimap Questie/Libs/HereBeDragons/HereBeDragons-Pins-2.0.lua:503:6 (1,248 Bytes, 0.22%)</title><rect x="347.6" y="389" width="3.5" height="15.0" fill="rgb(216,51,12)" rx="2" ry="2" />
+<text  x="350.61" y="399.5" ></text>
+</g>
+<g >
+<title>timer.callback CharacterNotes/Libs/AceTimer-3.0/AceTimer-3.0.lua:50:18 (95 Bytes, 0.02%)</title><rect x="1261.5" y="405" width="0.3" height="15.0" fill="rgb(229,114,27)" rx="2" ry="2" />
+<text  x="1264.52" y="415.5" ></text>
+</g>
+<g >
+<title>module:Debug DBM-Core/modules/DevTools.lua:43:1 (754 Bytes, 0.13%)</title><rect x="86.5" y="341" width="2.1" height="15.0" fill="rgb(217,58,13)" rx="2" ry="2" />
+<text  x="89.48" y="351.5" ></text>
+</g>
+<g >
+<title>GL:after Gargul/Classes/Helpers.lua:1234:0 (2,512 Bytes, 0.45%)</title><rect x="129.9" y="357" width="7.1" height="15.0" fill="rgb(210,26,6)" rx="2" ry="2" />
+<text  x="132.93" y="367.5" ></text>
+</g>
+<g >
+<title>Private.ScanForLoads WeakAuras/WeakAuras.lua:1820:0 (22,841 Bytes, 4.08%)</title><rect x="1497.0" y="389" width="64.5" height="15.0" fill="rgb(216,50,12)" rx="2" ry="2" />
+<text  x="1499.96" y="399.5" >Private..</text>
+</g>
+<g >
+<title>OnEvent AtlasLootClassic/Libs/AceComm-3.0/AceComm-3.0.lua:242:6 (77,221 Bytes, 13.81%)</title><rect x="668.4" y="405" width="218.1" height="15.0" fill="rgb(235,142,34)" rx="2" ry="2" />
+<text  x="671.38" y="415.5" >OnEvent AtlasLootClassic/Lib..</text>
+</g>
+<g >
+<title>dataFunctionRefs.MP5Items ExtendedCharacterStats/Modules/Data/Data.lua:191:19 (4,656 Bytes, 0.83%)</title><rect x="106.0" y="325" width="13.2" height="15.0" fill="rgb(216,52,12)" rx="2" ry="2" />
+<text  x="109.03" y="335.5" ></text>
+</g>
+<g >
+<title>eventFunctions.PLAYER_ENTERING_WORLD Plater/Plater.lua:2302:26 (640 Bytes, 0.11%)</title><rect x="1252.9" y="389" width="1.8" height="15.0" fill="rgb(240,164,39)" rx="2" ry="2" />
+<text  x="1255.86" y="399.5" ></text>
+</g>
+<g >
+<title>UpdateWorldMap Questie/Libs/HereBeDragons/HereBeDragons-Pins-2.0.lua:508:6 (12,264 Bytes, 2.19%)</title><rect x="351.1" y="389" width="34.7" height="15.0" fill="rgb(246,188,45)" rx="2" ry="2" />
+<text  x="354.13" y="399.5" >Up..</text>
+</g>
+<g >
+<title>(anonymous) Questie/Modules/Quest/QuestieQuest.lua:289:8 (7,680 Bytes, 1.37%)</title><rect x="1267.6" y="389" width="21.7" height="15.0" fill="rgb(249,204,48)" rx="2" ry="2" />
+<text  x="1270.59" y="399.5" >(..</text>
+</g>
+<g >
+<title>DecompressFixBlock DBM-Core/Libs/LibDeflate/LibDeflate.lua:2496:6 (3,072 Bytes, 0.55%)</title><rect x="844.5" y="277" width="8.6" height="15.0" fill="rgb(220,73,17)" rx="2" ry="2" />
+<text  x="847.46" y="287.5" ></text>
+</g>
+<g >
+<title>scanForLoadsImpl WeakAuras/WeakAuras.lua:1621:6 (22,841 Bytes, 4.08%)</title><rect x="1497.0" y="373" width="64.5" height="15.0" fill="rgb(249,204,48)" rx="2" ry="2" />
+<text  x="1499.96" y="383.5" >scanFor..</text>
+</g>
+<g >
+<title>Stats:UpdateInformation ExtendedCharacterStats/Modules/Stats.lua:330:0 (10,824 Bytes, 1.94%)</title><rect x="88.6" y="389" width="30.6" height="15.0" fill="rgb(219,67,16)" rx="2" ry="2" />
+<text  x="91.61" y="399.5" >St..</text>
+</g>
+<g >
+<title>f:CombatLogHandler Plater/libs/LibClassicDurations/core.lua:603:0 (1,560 Bytes, 0.28%)</title><rect x="385.8" y="373" width="4.4" height="15.0" fill="rgb(220,70,16)" rx="2" ry="2" />
+<text  x="388.78" y="383.5" ></text>
+</g>
+<g >
+<title>uid AdiBags/libs/AceHook-3.0/AceHook-3.0.lua:100:8 (2,136 Bytes, 0.38%)</title><rect x="73.3" y="405" width="6.0" height="15.0" fill="rgb(224,88,21)" rx="2" ry="2" />
+<text  x="76.29" y="415.5" ></text>
+</g>
+<g >
+<title>AceTimer:ScheduleTimer CharacterNotes/Libs/AceTimer-3.0/AceTimer-3.0.lua:94:0 (728 Bytes, 0.13%)</title><rect x="138.0" y="341" width="2.1" height="15.0" fill="rgb(249,205,49)" rx="2" ry="2" />
+<text  x="141.02" y="351.5" ></text>
+</g>
+<g >
+<title>target.? AdiBags/libs/CallbackHandler-1.0/CallbackHandler-1.0.lua:80:24 (240 Bytes, 0.04%)</title><rect x="48.7" y="245" width="0.6" height="15.0" fill="rgb(208,17,4)" rx="2" ry="2" />
+<text  x="51.65" y="255.5" ></text>
+</g>
+<g >
+<title>Private.ActivateAuraEnvironment WeakAuras/AuraEnvironment.lua:278:0 (360 Bytes, 0.06%)</title><rect x="1581.5" y="357" width="1.0" height="15.0" fill="rgb(233,129,31)" rx="2" ry="2" />
+<text  x="1584.49" y="367.5" ></text>
+</g>
+<g >
+<title>(anonymous) AdiBags/core/EventHandlers.lua:44:32 (22,402 Bytes, 4.01%)</title><rect x="10.0" y="405" width="63.3" height="15.0" fill="rgb(210,23,5)" rx="2" ry="2" />
+<text  x="13.00" y="415.5" >(anony..</text>
+</g>
+<g >
+<title>(anonymous) CharacterNotes/Libs/AceEvent-3.0/AceEvent-3.0.lua:119:36 (728 Bytes, 0.13%)</title><rect x="1259.5" y="405" width="2.0" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="1262.46" y="415.5" ></text>
+</g>
+<g >
+<title>(anonymous) Auctionator/Libs/LibSerialize/LibSerialize.lua:776:43 (2,284 Bytes, 0.41%)</title><rect x="860.5" y="261" width="6.5" height="15.0" fill="rgb(212,33,8)" rx="2" ry="2" />
+<text  x="863.54" y="271.5" ></text>
+</g>
+<g >
+<title>table.copy Details/Libs/DF/fw.lua:792:0 (72,864 Bytes, 13.03%)</title><rect x="1047.0" y="293" width="205.9" height="15.0" fill="rgb(243,179,42)" rx="2" ry="2" />
+<text  x="1050.02" y="303.5" >table.copy Details/Libs/DF/..</text>
+</g>
+<g >
+<title>OnEvent NovaWorldBuffs/Lib/HereBeDragons/HereBeDragons-2.0.lua:329:6 (1,248 Bytes, 0.22%)</title><rect x="304.3" y="405" width="3.6" height="15.0" fill="rgb(226,99,23)" rx="2" ry="2" />
+<text  x="307.35" y="415.5" ></text>
+</g>
+<g >
+<title>getIncomingHeals ClassicHealPrediction/ClassicHealPrediction.lua:323:6 (120 Bytes, 0.02%)</title><rect x="79.3" y="341" width="0.4" height="15.0" fill="rgb(242,171,41)" rx="2" ry="2" />
+<text  x="82.32" y="351.5" ></text>
+</g>
+<g >
+<title>AceAddon:DisableAddon AdiBags/libs/AceAddon-3.0/AceAddon-3.0.lua:551:0 (144 Bytes, 0.03%)</title><rect x="72.9" y="309" width="0.4" height="15.0" fill="rgb(207,11,2)" rx="2" ry="2" />
+<text  x="75.88" y="319.5" ></text>
+</g>
+<g >
+<title>GenericTrigger.LoadDisplays WeakAuras/GenericTrigger.lua:1322:0 (1,768 Bytes, 0.32%)</title><rect x="1501.5" y="341" width="5.0" height="15.0" fill="rgb(239,158,37)" rx="2" ry="2" />
+<text  x="1504.54" y="351.5" ></text>
+</g>
+<g >
+<title>mod:OnEnable AdiBags/modules/ChangeHighlight.lua:46:0 (464 Bytes, 0.08%)</title><rect x="27.1" y="277" width="1.3" height="15.0" fill="rgb(225,93,22)" rx="2" ry="2" />
+<text  x="30.09" y="287.5" ></text>
+</g>
+<g >
+<title>Dispatch AdiBags/libs/CallbackHandler-1.0/CallbackHandler-1.0.lua:15:6 (12,392 Bytes, 2.22%)</title><rect x="307.9" y="357" width="35.0" height="15.0" fill="rgb(244,180,43)" rx="2" ry="2" />
+<text  x="310.87" y="367.5" >Di..</text>
+</g>
+<g >
+<title>eventFunctions.QUEST_LOG_UPDATE Plater/Plater.lua:2187:21 (136 Bytes, 0.02%)</title><rect x="1254.7" y="389" width="0.4" height="15.0" fill="rgb(243,178,42)" rx="2" ry="2" />
+<text  x="1257.67" y="399.5" ></text>
+</g>
+<g >
+<title>TaskPrototype:Poll GlobalSearch/Internal/Task.lua:31:0 (12,696 Bytes, 2.27%)</title><rect x="268.5" y="405" width="35.8" height="15.0" fill="rgb(213,40,9)" rx="2" ry="2" />
+<text  x="271.48" y="415.5" >Tas..</text>
+</g>
+<g >
+<title>Data:GetMP5FromItems ExtendedCharacterStats/Modules/Data/MP5.lua:12:0 (4,656 Bytes, 0.83%)</title><rect x="92.9" y="293" width="13.1" height="15.0" fill="rgb(244,180,43)" rx="2" ry="2" />
+<text  x="95.88" y="303.5" ></text>
+</g>
+<g >
+<title>LibSerialize:Deserialize Auctionator/Libs/LibSerialize/LibSerialize.lua:1337:0 (3,236 Bytes, 0.58%)</title><rect x="858.3" y="309" width="9.1" height="15.0" fill="rgb(217,58,13)" rx="2" ry="2" />
+<text  x="861.26" y="319.5" ></text>
+</g>
+<g >
+<title>(anonymous) Gargul/Classes/TradeTime.lua:38:11 (2,736 Bytes, 0.49%)</title><rect x="129.3" y="373" width="7.7" height="15.0" fill="rgb(248,201,48)" rx="2" ry="2" />
+<text  x="132.30" y="383.5" ></text>
+</g>
+<g >
+<title>Plater.GetAllShownPlates Plater/Plater.lua:1247:1 (72 Bytes, 0.01%)</title><rect x="1255.2" y="357" width="0.2" height="15.0" fill="rgb(228,108,25)" rx="2" ry="2" />
+<text  x="1258.23" y="367.5" ></text>
+</g>
+<g >
+<title>(anonymous) AdiBags/core/Core.lua:101:56 (22,258 Bytes, 3.98%)</title><rect x="10.0" y="357" width="62.9" height="15.0" fill="rgb(209,20,4)" rx="2" ry="2" />
+<text  x="13.00" y="367.5" >(anony..</text>
+</g>
+<g >
+<title>WeakAuras (35,747 Bytes, 6.39%)</title><rect x="1489.0" y="421" width="101.0" height="15.0" fill="rgb(249,205,49)" rx="2" ry="2" />
+<text  x="1492.01" y="431.5" >WeakAuras</text>
+</g>
+<g >
+<title>backpack:PostEnable AdiBags/core/Bags.lua:207:1 (5,816 Bytes, 1.04%)</title><rect x="10.0" y="261" width="16.4" height="15.0" fill="rgb(217,59,14)" rx="2" ry="2" />
+<text  x="13.00" y="271.5" ></text>
+</g>
+<g >
+<title>UpdateMinimapZoom NovaWorldBuffs/Lib/HereBeDragons/HereBeDragons-Pins-2.0.lua:320:6 (1,673 Bytes, 0.30%)</title><rect x="342.9" y="373" width="4.7" height="15.0" fill="rgb(251,213,51)" rx="2" ry="2" />
+<text  x="345.88" y="383.5" ></text>
+</g>
+<g >
+<title>LibSerialize:DeserializeValue Auctionator/Libs/LibSerialize/LibSerialize.lua:1301:0 (1,015 Bytes, 0.18%)</title><rect x="853.1" y="309" width="2.9" height="15.0" fill="rgb(237,150,35)" rx="2" ry="2" />
+<text  x="856.14" y="319.5" ></text>
+</g>
+<g >
+<title>(anonymous) NovaWorldBuffs/NovaWorldBuffs.lua:3953:23 (1,600 Bytes, 0.29%)</title><rect x="650.4" y="405" width="4.6" height="15.0" fill="rgb(241,167,40)" rx="2" ry="2" />
+<text  x="653.43" y="415.5" ></text>
+</g>
+<g >
+<title>Private.CancelAnimation WeakAuras/Animations.lua:399:0 (105 Bytes, 0.02%)</title><rect x="1561.2" y="341" width="0.3" height="15.0" fill="rgb(225,93,22)" rx="2" ry="2" />
+<text  x="1564.18" y="351.5" ></text>
+</g>
+<g >
+<title>ClassicHealPrediction_OnUpdate ClassicHealPrediction/ClassicHealPrediction.lua:886:6 (240 Bytes, 0.04%)</title><rect x="79.3" y="389" width="0.7" height="15.0" fill="rgb(242,170,40)" rx="2" ry="2" />
+<text  x="82.32" y="399.5" ></text>
+</g>
+<g >
+<title>NWB:recordLockoutData NovaWorldBuffs/NWBData.lua:3066:0 (72 Bytes, 0.01%)</title><rect x="648.7" y="389" width="0.2" height="15.0" fill="rgb(235,142,34)" rx="2" ry="2" />
+<text  x="651.68" y="399.5" ></text>
+</g>
+<g >
+<title>GenericTrigger.ScanWithFakeEvent WeakAuras/GenericTrigger.lua:1045:0 (192 Bytes, 0.03%)</title><rect x="1502.1" y="325" width="0.5" height="15.0" fill="rgb(222,81,19)" rx="2" ry="2" />
+<text  x="1505.06" y="335.5" ></text>
+</g>
+<g >
+<title>(anonymous) WeakAuras/GenericTrigger.lua:1300:10 (128 Bytes, 0.02%)</title><rect x="1506.2" y="293" width="0.3" height="15.0" fill="rgb(225,92,22)" rx="2" ry="2" />
+<text  x="1509.18" y="303.5" ></text>
+</g>
+<g >
+<title>GenericTrigger.UnloadDisplays WeakAuras/GenericTrigger.lua:1136:0 (392 Bytes, 0.07%)</title><rect x="1560.1" y="341" width="1.1" height="15.0" fill="rgb(253,224,53)" rx="2" ry="2" />
+<text  x="1563.08" y="351.5" ></text>
+</g>
+<g >
+<title>handleEvent DBM-Core/DBM-Core.lua:1144:7 (3,048 Bytes, 0.54%)</title><rect x="80.0" y="405" width="8.6" height="15.0" fill="rgb(205,4,1)" rx="2" ry="2" />
+<text  x="83.00" y="415.5" ></text>
+</g>
+<g >
+<title>module:Resume GlobalSearch/Modules/TaskQueue.lua:74:0 (232 Bytes, 0.04%)</title><rect x="140.1" y="309" width="0.6" height="15.0" fill="rgb(240,163,39)" rx="2" ry="2" />
+<text  x="143.08" y="319.5" ></text>
+</g>
+<g >
+<title>RunTriggerFunc WeakAuras/GenericTrigger.lua:620:6 (72 Bytes, 0.01%)</title><rect x="1502.4" y="309" width="0.2" height="15.0" fill="rgb(245,186,44)" rx="2" ry="2" />
+<text  x="1505.40" y="319.5" ></text>
+</g>
+<g >
+<title>target.? AdiBags/libs/CallbackHandler-1.0/CallbackHandler-1.0.lua:80:24 (464 Bytes, 0.08%)</title><rect x="27.1" y="261" width="1.3" height="15.0" fill="rgb(208,17,4)" rx="2" ry="2" />
+<text  x="30.09" y="271.5" ></text>
+</g>
+<g >
+<title>_FormatStatsText ExtendedCharacterStats/Modules/Stats.lua:178:19 (10,824 Bytes, 1.94%)</title><rect x="88.6" y="357" width="30.6" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="91.61" y="367.5" >_F..</text>
+</g>
+<g >
+<title>(anonymous) NovaWorldBuffs/NovaWorldBuffs.lua:11765:23 (51 Bytes, 0.01%)</title><rect x="650.3" y="405" width="0.1" height="15.0" fill="rgb(231,121,29)" rx="2" ry="2" />
+<text  x="653.29" y="415.5" ></text>
+</g>
+<g >
+<title>GetAnchorFrame WeakAuras/WeakAuras.lua:5668:6 (2,352 Bytes, 0.42%)</title><rect x="1583.4" y="357" width="6.6" height="15.0" fill="rgb(220,71,17)" rx="2" ry="2" />
+<text  x="1586.36" y="367.5" ></text>
+</g>
+<g >
+<title>(anonymous) Auctionator/Libs/LibSerialize/LibSerialize.lua:776:43 (1,396 Bytes, 0.25%)</title><rect x="863.0" y="133" width="4.0" height="15.0" fill="rgb(212,33,8)" rx="2" ry="2" />
+<text  x="866.05" y="143.5" ></text>
+</g>
+<g >
+<title>CleanUpOutdatedMatchData WeakAuras/BuffTrigger2.lua:1759:6 (96 Bytes, 0.02%)</title><rect x="1563.3" y="341" width="0.3" height="15.0" fill="rgb(226,98,23)" rx="2" ry="2" />
+<text  x="1566.31" y="351.5" ></text>
+</g>
+<g >
+<title>HereBeDragons (28,825 Bytes, 5.15%)</title><rect x="304.3" y="421" width="81.5" height="15.0" fill="rgb(240,161,38)" rx="2" ry="2" />
+<text  x="307.35" y="431.5" >HereBeDra..</text>
+</g>
+<g >
+<title>Plater.CompileAllScripts Plater/Plater.lua:11136:1 (129,676 Bytes, 23.19%)</title><rect x="886.5" y="357" width="366.4" height="15.0" fill="rgb(219,68,16)" rx="2" ry="2" />
+<text  x="889.53" y="367.5" >Plater.CompileAllScripts Plater/Plater.lua:11136:1</text>
+</g>
+<g >
+<title>new CharacterNotes/Libs/AceTimer-3.0/AceTimer-3.0.lua:32:6 (728 Bytes, 0.13%)</title><rect x="138.0" y="325" width="2.1" height="15.0" fill="rgb(247,194,46)" rx="2" ry="2" />
+<text  x="141.02" y="335.5" ></text>
+</g>
+<g >
+<title>regfunc AdiBags/libs/CallbackHandler-1.0/CallbackHandler-1.0.lua:109:14 (232 Bytes, 0.04%)</title><rect x="140.1" y="357" width="0.6" height="15.0" fill="rgb(206,8,2)" rx="2" ry="2" />
+<text  x="143.08" y="367.5" ></text>
+</g>
+<g >
+<title>NWB:checkGuildMasterSetting NovaWorldBuffs/NovaWorldBuffs.lua:1152:0 (592 Bytes, 0.11%)</title><rect x="651.0" y="389" width="1.7" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="654.00" y="399.5" ></text>
+</g>
+<g >
+<title>GetOrCreateSubTable WeakAuras/BuffTrigger2.lua:149:6 (128 Bytes, 0.02%)</title><rect x="1501.2" y="229" width="0.3" height="15.0" fill="rgb(208,16,3)" rx="2" ry="2" />
+<text  x="1504.18" y="239.5" ></text>
+</g>
+<g >
+<title>Plater.CreateUniqueIdentifier Plater/Plater_ScriptingPanels.lua:361:0 (1,232 Bytes, 0.22%)</title><rect x="913.0" y="309" width="3.4" height="15.0" fill="rgb(247,197,47)" rx="2" ry="2" />
+<text  x="915.96" y="319.5" ></text>
+</g>
+<g >
+<title>NWB:recordCharacterData NovaWorldBuffs/NWBData.lua:2933:0 (90,696 Bytes, 16.22%)</title><rect x="392.5" y="389" width="256.2" height="15.0" fill="rgb(211,31,7)" rx="2" ry="2" />
+<text  x="395.47" y="399.5" >NWB:recordCharacterData NovaWorldB..</text>
+</g>
+<g >
+<title>CharacterNotes:AddMessage CharacterNotes/CharacterNotes.lua:1470:0 (648 Bytes, 0.12%)</title><rect x="82.7" y="325" width="1.8" height="15.0" fill="rgb(219,65,15)" rx="2" ry="2" />
+<text  x="85.70" y="335.5" ></text>
+</g>
+<g >
+<title>target.? AdiBags/libs/CallbackHandler-1.0/CallbackHandler-1.0.lua:80:24 (576 Bytes, 0.10%)</title><rect x="32.3" y="261" width="1.7" height="15.0" fill="rgb(208,17,4)" rx="2" ry="2" />
+<text  x="35.33" y="271.5" ></text>
+</g>
+<g >
+<title>worldmapProvider:RefreshAllData Questie/Libs/HereBeDragons/HereBeDragons-Pins-2.0.lua:386:0 (12,264 Bytes, 2.19%)</title><rect x="351.1" y="373" width="34.7" height="15.0" fill="rgb(220,70,16)" rx="2" ry="2" />
+<text  x="354.13" y="383.5" >wo..</text>
+</g>
+<g >
+<title>getIncomingHeals ClassicHealPrediction/ClassicHealPrediction.lua:323:6 (120 Bytes, 0.02%)</title><rect x="79.7" y="341" width="0.3" height="15.0" fill="rgb(242,171,41)" rx="2" ry="2" />
+<text  x="82.66" y="351.5" ></text>
+</g>
+<g >
+<title>LibSerialize:_ClearReferences Auctionator/Libs/LibSerialize/LibSerialize.lua:643:0 (288 Bytes, 0.05%)</title><rect x="859.7" y="277" width="0.8" height="15.0" fill="rgb(241,168,40)" rx="2" ry="2" />
+<text  x="862.72" y="287.5" ></text>
+</g>
+<g >
+<title>(anonymous) Auctionator/Libs/LibSerialize/LibSerialize.lua:775:43 (80 Bytes, 0.01%)</title><rect x="861.1" y="197" width="0.3" height="15.0" fill="rgb(218,63,15)" rx="2" ry="2" />
+<text  x="864.13" y="207.5" ></text>
+</g>
+<g >
+<title>GetActiveItemList RXPGuides/ActiveItemFrame.lua:32:6 (72 Bytes, 0.01%)</title><rect x="1290.6" y="293" width="0.2" height="15.0" fill="rgb(224,87,20)" rx="2" ry="2" />
+<text  x="1293.56" y="303.5" ></text>
+</g>
+<g >
+<title>LibSerialize:_ReadString Auctionator/Libs/LibSerialize/LibSerialize.lua:738:0 (80 Bytes, 0.01%)</title><rect x="861.1" y="181" width="0.3" height="15.0" fill="rgb(252,216,51)" rx="2" ry="2" />
+<text  x="864.13" y="191.5" ></text>
+</g>
+<g >
+<title>OnEvent ClassicHealPrediction/libs/LibHealComm-4.0/LibHealComm-4.0.lua:3579:6 (120 Bytes, 0.02%)</title><rect x="390.2" y="405" width="0.3" height="15.0" fill="rgb(232,126,30)" rx="2" ry="2" />
+<text  x="393.18" y="415.5" ></text>
+</g>
+<g >
+<title>callback WeakAuras/WeakAuras.lua:1388:17 (2,595 Bytes, 0.46%)</title><rect x="1489.6" y="389" width="7.4" height="15.0" fill="rgb(205,2,0)" rx="2" ry="2" />
+<text  x="1492.62" y="399.5" ></text>
+</g>
+<g >
+<title>(anonymous) NovaWorldBuffs/NWBData.lua:2902:23 (91,008 Bytes, 16.27%)</title><rect x="392.5" y="405" width="257.1" height="15.0" fill="rgb(214,43,10)" rx="2" ry="2" />
+<text  x="395.47" y="415.5" >(anonymous) NovaWorldBuffs/NWBData..</text>
+</g>
+<g >
+<title>UpdateMinimapZoom NovaWorldBuffs/Lib/HereBeDragons/HereBeDragons-Pins-2.0.lua:320:6 (1,248 Bytes, 0.22%)</title><rect x="304.3" y="325" width="3.6" height="15.0" fill="rgb(251,213,51)" rx="2" ry="2" />
+<text  x="307.35" y="335.5" ></text>
+</g>
+<g >
+<title>LibSerialize:_ReadString Auctionator/Libs/LibSerialize/LibSerialize.lua:738:0 (207 Bytes, 0.04%)</title><rect x="855.4" y="261" width="0.6" height="15.0" fill="rgb(252,216,51)" rx="2" ry="2" />
+<text  x="858.42" y="271.5" ></text>
+</g>
+<g >
+<title>NWB:pairsByKeys NovaWorldBuffs/NovaWorldBuffs.lua:4835:0 (544 Bytes, 0.10%)</title><rect x="885.0" y="309" width="1.5" height="15.0" fill="rgb(229,112,26)" rx="2" ry="2" />
+<text  x="887.99" y="319.5" ></text>
+</g>
+<g >
+<title>BuffTrigger.UnloadDisplays WeakAuras/BuffTrigger2.lua:2637:0 (112 Bytes, 0.02%)</title><rect x="1559.8" y="341" width="0.3" height="15.0" fill="rgb(242,171,41)" rx="2" ry="2" />
+<text  x="1562.76" y="351.5" ></text>
+</g>
+<g >
+<title>_UpdateStats ExtendedCharacterStats/Modules/Stats.lua:343:15 (10,824 Bytes, 1.94%)</title><rect x="88.6" y="373" width="30.6" height="15.0" fill="rgb(236,144,34)" rx="2" ry="2" />
+<text  x="91.61" y="383.5" >_U..</text>
+</g>
+<g >
+<title>targeting:LoadRares RXPGuides/Targeting.lua:1194:0 (216 Bytes, 0.04%)</title><rect x="1290.8" y="325" width="0.6" height="15.0" fill="rgb(226,97,23)" rx="2" ry="2" />
+<text  x="1293.76" y="335.5" ></text>
+</g>
+<g >
+<title>(anonymous) Gargul/Classes/PackMule.lua:56:78 (1,324 Bytes, 0.24%)</title><rect x="125.6" y="373" width="3.7" height="15.0" fill="rgb(218,64,15)" rx="2" ry="2" />
+<text  x="128.56" y="383.5" ></text>
+</g>
+<g >
+<title>FullUpdate ShadowedUnitFrames/modules/units.lua:18:6 (84 Bytes, 0.02%)</title><rect x="1488.8" y="373" width="0.2" height="15.0" fill="rgb(225,96,22)" rx="2" ry="2" />
+<text  x="1491.78" y="383.5" ></text>
+</g>
+<g >
+<title>HandleEvent WeakAuras/GenericTrigger.lua:1079:0 (2,983 Bytes, 0.53%)</title><rect x="1574.5" y="405" width="8.4" height="15.0" fill="rgb(228,107,25)" rx="2" ry="2" />
+<text  x="1577.52" y="415.5" ></text>
+</g>
+<g >
+<title>UpdateCurrentPosition Questie/Libs/HereBeDragons/HereBeDragons-2.0.lua:282:6 (12,392 Bytes, 2.22%)</title><rect x="307.9" y="389" width="35.0" height="15.0" fill="rgb(214,42,10)" rx="2" ry="2" />
+<text  x="310.87" y="399.5" >Up..</text>
+</g>
+<g >
+<title>LibSerialize:_AddReference Auctionator/Libs/LibSerialize/LibSerialize.lua:635:0 (80 Bytes, 0.01%)</title><rect x="861.1" y="165" width="0.3" height="15.0" fill="rgb(212,32,7)" rx="2" ry="2" />
+<text  x="864.13" y="175.5" ></text>
+</g>
+<g >
+<title>(anonymous) GlobalSearch/Modules/Search.lua:54:48 (12,696 Bytes, 2.27%)</title><rect x="268.5" y="389" width="35.8" height="15.0" fill="rgb(241,167,40)" rx="2" ry="2" />
+<text  x="271.48" y="399.5" >(an..</text>
+</g>
+<g >
+<title>(anonymous) Questie/Modules/QuestieEventHandler.lua:204:51 (2,056 Bytes, 0.37%)</title><rect x="1261.8" y="357" width="5.8" height="15.0" fill="rgb(232,124,29)" rx="2" ry="2" />
+<text  x="1264.79" y="367.5" ></text>
+</g>
+<g >
+<title>registry:Fire AdiBags/libs/CallbackHandler-1.0/CallbackHandler-1.0.lua:49:1 (77,221 Bytes, 13.81%)</title><rect x="668.4" y="389" width="218.1" height="15.0" fill="rgb(215,48,11)" rx="2" ry="2" />
+<text  x="671.38" y="399.5" >registry:Fire AdiBags/libs/C..</text>
+</g>
+<g >
+<title>module:CheckBlockers GlobalSearch/Modules/TaskQueue.lua:50:0 (232 Bytes, 0.04%)</title><rect x="140.1" y="325" width="0.6" height="15.0" fill="rgb(225,93,22)" rx="2" ry="2" />
+<text  x="143.08" y="335.5" ></text>
+</g>
+<g >
+<title>LibDeflate:DecodeForWoWChatChannel DBM-Core/Libs/LibDeflate/LibDeflate.lua:3149:0 (59,585 Bytes, 10.65%)</title><rect x="669.6" y="325" width="168.4" height="15.0" fill="rgb(233,129,31)" rx="2" ry="2" />
+<text  x="672.64" y="335.5" >LibDeflate:DecodeForW..</text>
+</g>
+<g >
+<title>translate ExtendedCharacterStats/Modules/i18n/i18n.lua:20:6 (1,512 Bytes, 0.27%)</title><rect x="88.6" y="325" width="4.3" height="15.0" fill="rgb(247,197,47)" rx="2" ry="2" />
+<text  x="91.61" y="335.5" ></text>
+</g>
+<g >
+<title>target.? AdiBags/libs/CallbackHandler-1.0/CallbackHandler-1.0.lua:80:24 (232 Bytes, 0.04%)</title><rect x="36.3" y="261" width="0.6" height="15.0" fill="rgb(208,17,4)" rx="2" ry="2" />
+<text  x="39.29" y="271.5" ></text>
+</g>
+<g >
+<title>mod:OnEnable AdiBags/modules/DataSource.lua:71:0 (1,969 Bytes, 0.35%)</title><rect x="28.4" y="277" width="5.6" height="15.0" fill="rgb(211,30,7)" rx="2" ry="2" />
+<text  x="31.40" y="287.5" ></text>
+</g>
+<g >
+<title>AceAddon:DisableAddon AdiBags/libs/AceAddon-3.0/AceAddon-3.0.lua:551:0 (144 Bytes, 0.03%)</title><rect x="72.9" y="325" width="0.4" height="15.0" fill="rgb(207,11,2)" rx="2" ry="2" />
+<text  x="75.88" y="335.5" ></text>
+</g>
+<g >
+<title>Dispatch AdiBags/libs/CallbackHandler-1.0/CallbackHandler-1.0.lua:15:6 (22,402 Bytes, 4.01%)</title><rect x="10.0" y="373" width="63.3" height="15.0" fill="rgb(244,180,43)" rx="2" ry="2" />
+<text  x="13.00" y="383.5" >Dispat..</text>
+</g>
+<g >
+<title>meta.__index AdiBags/libs/CallbackHandler-1.0/CallbackHandler-1.0.lua:7:24 (72 Bytes, 0.01%)</title><rect x="44.7" y="245" width="0.2" height="15.0" fill="rgb(239,158,37)" rx="2" ry="2" />
+<text  x="47.67" y="255.5" ></text>
+</g>
+<g >
+<title>update Quartz/modules/Mirror.lua:308:7 (95 Bytes, 0.02%)</title><rect x="1261.5" y="389" width="0.3" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="1264.52" y="399.5" ></text>
+</g>
+<g >
+<title>(anonymous) ShadowedUnitFrames/modules/units.lua:1351:34 (127 Bytes, 0.02%)</title><rect x="1488.7" y="405" width="0.3" height="15.0" fill="rgb(243,176,42)" rx="2" ry="2" />
+<text  x="1491.66" y="415.5" ></text>
+</g>
+<g >
+<title>CharacterNotes:AddMessage CharacterNotes/CharacterNotes.lua:1470:0 (648 Bytes, 0.12%)</title><rect x="86.8" y="309" width="1.8" height="15.0" fill="rgb(219,65,15)" rx="2" ry="2" />
+<text  x="89.78" y="319.5" ></text>
+</g>
+<g >
+<title>PackMule:zoneChanged Gargul/Classes/PackMule.lua:359:0 (120 Bytes, 0.02%)</title><rect x="129.0" y="357" width="0.3" height="15.0" fill="rgb(240,164,39)" rx="2" ry="2" />
+<text  x="131.96" y="367.5" ></text>
+</g>
+<g >
+<title>DBM:Debug DBM-Core/DBM-Core.lua:7248:1 (754 Bytes, 0.13%)</title><rect x="86.5" y="357" width="2.1" height="15.0" fill="rgb(215,48,11)" rx="2" ry="2" />
+<text  x="89.48" y="367.5" ></text>
+</g>
+<g >
+<title>AceHook:RawHook AdiBags/libs/AceHook-3.0/AceHook-3.0.lua:312:0 (3,024 Bytes, 0.54%)</title><rect x="10.0" y="229" width="8.5" height="15.0" fill="rgb(231,121,28)" rx="2" ry="2" />
+<text  x="13.00" y="239.5" ></text>
+</g>
+<g >
+<title>regfunc AdiBags/libs/CallbackHandler-1.0/CallbackHandler-1.0.lua:109:14 (70,124 Bytes, 12.54%)</title><rect x="1290.6" y="357" width="198.1" height="15.0" fill="rgb(206,8,2)" rx="2" ry="2" />
+<text  x="1293.56" y="367.5" >regfunc AdiBags/libs/Call..</text>
+</g>
+<g >
+<title>AceHook:OnEmbedDisable AdiBags/libs/AceHook-3.0/AceHook-3.0.lua:78:0 (144 Bytes, 0.03%)</title><rect x="72.9" y="277" width="0.4" height="15.0" fill="rgb(226,97,23)" rx="2" ry="2" />
+<text  x="75.88" y="287.5" ></text>
+</g>
+<g >
+<title>buildCache MacroToolkit/modules/showtooltipMock.lua:11:6 (436 Bytes, 0.08%)</title><rect x="391.2" y="389" width="1.3" height="15.0" fill="rgb(252,220,52)" rx="2" ry="2" />
+<text  x="394.23" y="399.5" ></text>
+</g>
+<g >
+<title>new CharacterNotes/Libs/AceTimer-3.0/AceTimer-3.0.lua:32:6 (1,456 Bytes, 0.26%)</title><rect x="1585.9" y="309" width="4.1" height="15.0" fill="rgb(247,194,46)" rx="2" ry="2" />
+<text  x="1588.89" y="319.5" ></text>
+</g>
+<g >
+<title>createHook AdiBags/libs/AceHook-3.0/AceHook-3.0.lua:82:0 (440 Bytes, 0.08%)</title><rect x="37.7" y="229" width="1.2" height="15.0" fill="rgb(210,26,6)" rx="2" ry="2" />
+<text  x="40.67" y="239.5" ></text>
+</g>
+<g >
+<title>(anonymous) CharacterNotes/Libs/AceEvent-3.0/AceEvent-3.0.lua:119:36 (232 Bytes, 0.04%)</title><rect x="140.1" y="405" width="0.6" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="143.08" y="415.5" ></text>
+</g>
+<g >
+<title>UpdateBook WeakAuras/Libs/LibSpellRange-1.0/LibSpellRange-1.0.lua:97:6 (252 Bytes, 0.05%)</title><rect x="390.5" y="389" width="0.7" height="15.0" fill="rgb(221,75,18)" rx="2" ry="2" />
+<text  x="393.52" y="399.5" ></text>
+</g>
+<g >
+<title>addon:BAG_UPDATE_DELAYED RXPGuides/RXPGuides.lua:1179:0 (72 Bytes, 0.01%)</title><rect x="1290.6" y="341" width="0.2" height="15.0" fill="rgb(239,158,37)" rx="2" ry="2" />
+<text  x="1293.56" y="351.5" ></text>
+</g>
+<g >
+<title>Auras:UpdateFilter ShadowedUnitFrames/modules/auras.lua:504:0 (43 Bytes, 0.01%)</title><rect x="1488.7" y="373" width="0.1" height="15.0" fill="rgb(233,132,31)" rx="2" ry="2" />
+<text  x="1491.66" y="383.5" ></text>
+</g>
+<g >
+<title>OnEventHandler NovaWorldBuffs/Lib/HereBeDragons/HereBeDragons-Pins-2.0.lua:496:6 (1,673 Bytes, 0.30%)</title><rect x="342.9" y="405" width="4.7" height="15.0" fill="rgb(220,70,16)" rx="2" ry="2" />
+<text  x="345.88" y="415.5" ></text>
+</g>
+<g >
+<title>meta.__index AdiBags/libs/CallbackHandler-1.0/CallbackHandler-1.0.lua:7:24 (2,904 Bytes, 0.52%)</title><rect x="64.7" y="261" width="8.2" height="15.0" fill="rgb(239,158,37)" rx="2" ry="2" />
+<text  x="67.68" y="271.5" ></text>
+</g>
+<g >
+<title>NWB:convertKeys NovaWorldBuffs/NWBData.lua:2237:0 (2,832 Bytes, 0.51%)</title><rect x="877.0" y="277" width="8.0" height="15.0" fill="rgb(243,179,42)" rx="2" ry="2" />
+<text  x="879.99" y="287.5" ></text>
+</g>
+<g >
+<title>uid AdiBags/libs/AceHook-3.0/AceHook-3.0.lua:100:8 (648 Bytes, 0.12%)</title><rect x="86.8" y="325" width="1.8" height="15.0" fill="rgb(224,88,21)" rx="2" ry="2" />
+<text  x="89.78" y="335.5" ></text>
+</g>
+<g >
+<title>NWB:recordLockoutData NovaWorldBuffs/NWBData.lua:3066:0 (72 Bytes, 0.01%)</title><rect x="648.5" y="373" width="0.2" height="15.0" fill="rgb(235,142,34)" rx="2" ry="2" />
+<text  x="651.48" y="383.5" ></text>
+</g>
+<g >
+<title>UnitFrameHealPredictionBars_Update ClassicHealPrediction/ClassicHealPrediction.lua:565:4 (120 Bytes, 0.02%)</title><rect x="79.7" y="373" width="0.3" height="15.0" fill="rgb(233,133,31)" rx="2" ry="2" />
+<text  x="82.66" y="383.5" ></text>
+</g>
+<g >
+<title>registry:Fire AdiBags/libs/CallbackHandler-1.0/CallbackHandler-1.0.lua:49:1 (232 Bytes, 0.04%)</title><rect x="140.1" y="389" width="0.6" height="15.0" fill="rgb(215,48,11)" rx="2" ry="2" />
+<text  x="143.08" y="399.5" ></text>
+</g>
+<g >
+<title>GL:cancelTimer Gargul/Classes/Helpers.lua:1267:0 (65 Bytes, 0.01%)</title><rect x="136.8" y="341" width="0.2" height="15.0" fill="rgb(215,48,11)" rx="2" ry="2" />
+<text  x="139.85" y="351.5" ></text>
+</g>
+<g >
+<title>ClassicHealPrediction (240 Bytes, 0.04%)</title><rect x="79.3" y="421" width="0.7" height="15.0" fill="rgb(236,143,34)" rx="2" ry="2" />
+<text  x="82.32" y="431.5" ></text>
+</g>
+<g >
+<title>module:Debug DBM-Core/modules/DevTools.lua:43:1 (648 Bytes, 0.12%)</title><rect x="82.7" y="357" width="1.8" height="15.0" fill="rgb(217,58,13)" rx="2" ry="2" />
+<text  x="85.70" y="367.5" ></text>
+</g>
+<g >
+<title>Plater.GetAllScriptsAsPrioSortedCopy Plater/Plater.lua:11060:1 (129,676 Bytes, 23.19%)</title><rect x="886.5" y="341" width="366.4" height="15.0" fill="rgb(237,149,35)" rx="2" ry="2" />
+<text  x="889.53" y="351.5" >Plater.GetAllScriptsAsPrioSortedCopy Plater/Plate..</text>
+</g>
+<g >
+<title>Questie (10,184 Bytes, 1.82%)</title><rect x="1261.8" y="421" width="28.8" height="15.0" fill="rgb(209,18,4)" rx="2" ry="2" />
+<text  x="1264.79" y="431.5" >Qu..</text>
+</g>
+<g >
+<title>Plater.QuestLogUpdated Plater/Plater.lua:9786:1 (136 Bytes, 0.02%)</title><rect x="1254.7" y="373" width="0.4" height="15.0" fill="rgb(250,211,50)" rx="2" ry="2" />
+<text  x="1257.67" y="383.5" ></text>
+</g>
+<g >
+<title>ExtendedCharacterStats (10,824 Bytes, 1.94%)</title><rect x="88.6" y="421" width="30.6" height="15.0" fill="rgb(209,20,4)" rx="2" ry="2" />
+<text  x="91.61" y="431.5" >Ex..</text>
+</g>
+<g >
+<title>Private.RegisterForGlobalConditions WeakAuras/Conditions.lua:972:0 (7,352 Bytes, 1.31%)</title><rect x="1506.5" y="341" width="20.8" height="15.0" fill="rgb(227,104,25)" rx="2" ry="2" />
+<text  x="1509.54" y="351.5" ></text>
+</g>
+<g >
+<title>Disable AdiBags/libs/AceAddon-3.0/AceAddon-3.0.lua:310:0 (144 Bytes, 0.03%)</title><rect x="72.9" y="341" width="0.4" height="15.0" fill="rgb(218,60,14)" rx="2" ry="2" />
+<text  x="75.88" y="351.5" ></text>
+</g>
+<g >
+<title>TaskPrototype:Poll GlobalSearch/Internal/Task.lua:31:0 (2,400 Bytes, 0.43%)</title><rect x="140.7" y="373" width="6.8" height="15.0" fill="rgb(213,40,9)" rx="2" ry="2" />
+<text  x="143.74" y="383.5" ></text>
+</g>
+<g >
+<title>regfunc AdiBags/libs/CallbackHandler-1.0/CallbackHandler-1.0.lua:109:14 (77,221 Bytes, 13.81%)</title><rect x="668.4" y="357" width="218.1" height="15.0" fill="rgb(206,8,2)" rx="2" ry="2" />
+<text  x="671.38" y="367.5" >regfunc AdiBags/libs/Callbac..</text>
+</g>
+<g >
+<title>hook AdiBags/libs/AceHook-3.0/AceHook-3.0.lua:118:0 (696 Bytes, 0.12%)</title><rect x="36.9" y="245" width="2.0" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="39.94" y="255.5" ></text>
+</g>
+<g >
+<title>Private.UpdatedTriggerState WeakAuras/WeakAuras.lua:4686:0 (72 Bytes, 0.01%)</title><rect x="1582.5" y="357" width="0.2" height="15.0" fill="rgb(240,162,38)" rx="2" ry="2" />
+<text  x="1585.50" y="367.5" ></text>
+</g>
+<g >
+<title>registry:Fire AdiBags/libs/CallbackHandler-1.0/CallbackHandler-1.0.lua:49:1 (728 Bytes, 0.13%)</title><rect x="1259.5" y="389" width="2.0" height="15.0" fill="rgb(215,48,11)" rx="2" ry="2" />
+<text  x="1262.46" y="399.5" ></text>
+</g>
+<g >
+<title>LibSerialize:DeserializeValue Auctionator/Libs/LibSerialize/LibSerialize.lua:1301:0 (3,092 Bytes, 0.55%)</title><rect x="858.3" y="293" width="8.7" height="15.0" fill="rgb(237,150,35)" rx="2" ry="2" />
+<text  x="861.26" y="303.5" ></text>
+</g>
+<g >
+<title>DBM-Core (3,048 Bytes, 0.54%)</title><rect x="80.0" y="421" width="8.6" height="15.0" fill="rgb(221,73,17)" rx="2" ry="2" />
+<text  x="83.00" y="431.5" ></text>
+</g>
+<g >
+<title>LibSerialize:Deserialize Auctionator/Libs/LibSerialize/LibSerialize.lua:1337:0 (1,159 Bytes, 0.21%)</title><rect x="853.1" y="325" width="3.3" height="15.0" fill="rgb(217,58,13)" rx="2" ry="2" />
+<text  x="856.14" y="335.5" ></text>
+</g>
+<g >
+<title>mod:OnEnable AdiBags/modules/NewItemTracking.lua:80:0 (1,056 Bytes, 0.19%)</title><rect x="41.9" y="277" width="3.0" height="15.0" fill="rgb(247,196,46)" rx="2" ry="2" />
+<text  x="44.89" y="287.5" ></text>
+</g>
+<g >
+<title>Plater.ScheduleRunFunctionForEvent Plater/Plater.lua:3911:1 (640 Bytes, 0.11%)</title><rect x="1252.9" y="373" width="1.8" height="15.0" fill="rgb(206,8,2)" rx="2" ry="2" />
+<text  x="1255.86" y="383.5" ></text>
+</g>
+<g >
+<title>AceTimer:ScheduleTimer CharacterNotes/Libs/AceTimer-3.0/AceTimer-3.0.lua:94:0 (1,456 Bytes, 0.26%)</title><rect x="132.7" y="341" width="4.1" height="15.0" fill="rgb(249,205,49)" rx="2" ry="2" />
+<text  x="135.73" y="351.5" ></text>
+</g>
+<g >
+<title>LibSerialize:_AddReference Auctionator/Libs/LibSerialize/LibSerialize.lua:635:0 (80 Bytes, 0.01%)</title><rect x="862.8" y="165" width="0.2" height="15.0" fill="rgb(212,32,7)" rx="2" ry="2" />
+<text  x="865.82" y="175.5" ></text>
+</g>
+<g >
+<title>target.? AdiBags/libs/CallbackHandler-1.0/CallbackHandler-1.0.lua:80:24 (56 Bytes, 0.01%)</title><rect x="32.2" y="229" width="0.1" height="15.0" fill="rgb(208,17,4)" rx="2" ry="2" />
+<text  x="35.17" y="239.5" ></text>
+</g>
+<g >
+<title>GenericTrigger.GetTriggerConditions WeakAuras/GenericTrigger.lua:4216:0 (72 Bytes, 0.01%)</title><rect x="1527.1" y="309" width="0.2" height="15.0" fill="rgb(250,208,49)" rx="2" ry="2" />
+<text  x="1530.10" y="319.5" ></text>
+</g>
+<g >
+<title>NWB.j NovaWorldBuffs/NovaWorldBuffs.lua:10558:0 (2,171 Bytes, 0.39%)</title><rect x="867.4" y="309" width="6.1" height="15.0" fill="rgb(245,187,44)" rx="2" ry="2" />
+<text  x="870.40" y="319.5" ></text>
+</g>
+<g >
+<title>target.? AdiBags/libs/CallbackHandler-1.0/CallbackHandler-1.0.lua:80:24 (8,336 Bytes, 1.49%)</title><rect x="49.3" y="277" width="23.6" height="15.0" fill="rgb(208,17,4)" rx="2" ry="2" />
+<text  x="52.33" y="287.5" >t..</text>
+</g>
+<g >
+<title>NWB:recalcMinimapLayerFrame NovaWorldBuffs/NovaWorldBuffs.lua:12808:0 (51 Bytes, 0.01%)</title><rect x="650.3" y="389" width="0.1" height="15.0" fill="rgb(232,124,29)" rx="2" ry="2" />
+<text  x="653.29" y="399.5" ></text>
+</g>
+<g >
+<title>ReadBytes Auctionator/Libs/LibSerialize/LibSerialize.lua:497:10 (127 Bytes, 0.02%)</title><rect x="855.6" y="245" width="0.4" height="15.0" fill="rgb(233,130,31)" rx="2" ry="2" />
+<text  x="858.65" y="255.5" ></text>
+</g>
+<g >
+<title>registry:Fire AdiBags/libs/CallbackHandler-1.0/CallbackHandler-1.0.lua:49:1 (22,402 Bytes, 4.01%)</title><rect x="10.0" y="389" width="63.3" height="15.0" fill="rgb(215,48,11)" rx="2" ry="2" />
+<text  x="13.00" y="399.5" >regist..</text>
+</g>
+<g >
+<title>addon:EnableHooks AdiBags/core/Core.lua:190:0 (5,584 Bytes, 1.00%)</title><rect x="10.0" y="245" width="15.8" height="15.0" fill="rgb(208,14,3)" rx="2" ry="2" />
+<text  x="13.00" y="255.5" ></text>
+</g>
+<g >
+<title>meta.__index AdiBags/libs/CallbackHandler-1.0/CallbackHandler-1.0.lua:7:24 (72 Bytes, 0.01%)</title><rect x="41.7" y="245" width="0.2" height="15.0" fill="rgb(239,158,37)" rx="2" ry="2" />
+<text  x="44.69" y="255.5" ></text>
+</g>
+<g >
+<title>Events:listen Gargul/Classes/Events.lua:161:0 (7,396 Bytes, 1.32%)</title><rect x="119.2" y="405" width="20.9" height="15.0" fill="rgb(219,68,16)" rx="2" ry="2" />
+<text  x="122.19" y="415.5" ></text>
+</g>
+<g >
+<title>DecompressDeflateInternal DBM-Core/Libs/LibDeflate/LibDeflate.lua:2648:6 (5,370 Bytes, 0.96%)</title><rect x="838.0" y="309" width="15.1" height="15.0" fill="rgb(222,82,19)" rx="2" ry="2" />
+<text  x="840.97" y="319.5" ></text>
+</g>
+<g >
+<title>updateAuras NovaWorldBuffs/NWBData.lua:5445:6 (256 Bytes, 0.05%)</title><rect x="649.6" y="389" width="0.7" height="15.0" fill="rgb(240,161,38)" rx="2" ry="2" />
+<text  x="652.56" y="399.5" ></text>
+</g>
+<g >
+<title>WeakAuras.GetTriggerStateForTrigger WeakAuras/WeakAuras.lua:4365:0 (72 Bytes, 0.01%)</title><rect x="1582.5" y="341" width="0.2" height="15.0" fill="rgb(237,148,35)" rx="2" ry="2" />
+<text  x="1585.50" y="351.5" ></text>
+</g>
+<g >
+<title>meta.__index AdiBags/libs/CallbackHandler-1.0/CallbackHandler-1.0.lua:7:24 (72 Bytes, 0.01%)</title><rect x="36.1" y="245" width="0.2" height="15.0" fill="rgb(239,158,37)" rx="2" ry="2" />
+<text  x="39.08" y="255.5" ></text>
+</g>
+<g >
+<title>CharacterNotes (2,136 Bytes, 0.38%)</title><rect x="73.3" y="421" width="6.0" height="15.0" fill="rgb(225,96,22)" rx="2" ry="2" />
+<text  x="76.29" y="431.5" ></text>
+</g>
+<g >
+<title>Dispatch AdiBags/libs/CallbackHandler-1.0/CallbackHandler-1.0.lua:15:6 (77,221 Bytes, 13.81%)</title><rect x="668.4" y="373" width="218.1" height="15.0" fill="rgb(244,180,43)" rx="2" ry="2" />
+<text  x="671.38" y="383.5" >Dispatch AdiBags/libs/Callba..</text>
+</g>
+<g >
+<title>AceAddon:EnableAddon AdiBags/libs/AceAddon-3.0/AceAddon-3.0.lua:516:0 (22,258 Bytes, 3.98%)</title><rect x="10.0" y="325" width="62.9" height="15.0" fill="rgb(205,0,0)" rx="2" ry="2" />
+<text  x="13.00" y="335.5" >AceAdd..</text>
+</g>
+<g >
+<title>createUniqueIdentifier Plater/Plater_ScriptingPanels.lua:339:31 (1,232 Bytes, 0.22%)</title><rect x="913.0" y="293" width="3.4" height="15.0" fill="rgb(249,204,48)" rx="2" ry="2" />
+<text  x="915.96" y="303.5" ></text>
+</g>
+<g >
+<title>(anonymous) Auctionator/Libs/LibSerialize/LibSerialize.lua:776:43 (1,996 Bytes, 0.36%)</title><rect x="861.4" y="197" width="5.6" height="15.0" fill="rgb(212,33,8)" rx="2" ry="2" />
+<text  x="864.35" y="207.5" ></text>
+</g>
+<g >
+<title>NWB:config NovaWorldBuffs/Options.lua:3750:0 (288 Bytes, 0.05%)</title><rect x="873.9" y="293" width="0.8" height="15.0" fill="rgb(248,202,48)" rx="2" ry="2" />
+<text  x="876.89" y="303.5" ></text>
+</g>
+<g >
+<title>NWB:combatLogEventUnfiltered NovaWorldBuffs/NovaWorldBuffs.lua:1672:0 (568 Bytes, 0.10%)</title><rect x="652.7" y="389" width="1.6" height="15.0" fill="rgb(237,150,35)" rx="2" ry="2" />
+<text  x="655.67" y="399.5" ></text>
+</g>
+<g >
+<title>safecall AdiBags/libs/AceAddon-3.0/AceAddon-3.0.lua:61:6 (12,345 Bytes, 2.21%)</title><rect x="10.0" y="293" width="34.9" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="13.00" y="303.5" >sa..</text>
+</g>
+<g >
+<title>safecall AdiBags/libs/AceAddon-3.0/AceAddon-3.0.lua:61:6 (144 Bytes, 0.03%)</title><rect x="72.9" y="293" width="0.4" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="75.88" y="303.5" ></text>
+</g>
+<g >
+<title>addon:OnEnable AdiBags/core/Core.lua:118:0 (9,913 Bytes, 1.77%)</title><rect x="44.9" y="293" width="28.0" height="15.0" fill="rgb(220,71,17)" rx="2" ry="2" />
+<text  x="47.87" y="303.5" >a..</text>
+</g>
+<g >
+<title>Private.AnchorFrame WeakAuras/WeakAuras.lua:5782:0 (2,352 Bytes, 0.42%)</title><rect x="1583.4" y="373" width="6.6" height="15.0" fill="rgb(219,68,16)" rx="2" ry="2" />
+<text  x="1586.36" y="383.5" ></text>
+</g>
+<g >
+<title>new CharacterNotes/Libs/AceTimer-3.0/AceTimer-3.0.lua:32:6 (1,456 Bytes, 0.26%)</title><rect x="132.7" y="325" width="4.1" height="15.0" fill="rgb(247,194,46)" rx="2" ry="2" />
+<text  x="135.73" y="335.5" ></text>
+</g>
+<g >
+<title>DecodeUntilEndOfBlock DBM-Core/Libs/LibDeflate/LibDeflate.lua:2353:6 (3,072 Bytes, 0.55%)</title><rect x="844.5" y="261" width="8.6" height="15.0" fill="rgb(225,94,22)" rx="2" ry="2" />
+<text  x="847.46" y="271.5" ></text>
+</g>
+<g >
+<title>(anonymous) NovaWorldBuffs/NWBData.lua:5477:23 (256 Bytes, 0.05%)</title><rect x="649.6" y="405" width="0.7" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="652.56" y="415.5" ></text>
+</g>
+<g >
+<title>OnEventHandler Questie/Libs/HereBeDragons/HereBeDragons-Pins-2.0.lua:525:6 (13,512 Bytes, 2.42%)</title><rect x="347.6" y="405" width="38.2" height="15.0" fill="rgb(229,114,27)" rx="2" ry="2" />
+<text  x="350.61" y="415.5" >OnE..</text>
+</g>
+<g >
+<title>ReferenceMatchData WeakAuras/BuffTrigger2.lua:201:6 (472 Bytes, 0.08%)</title><rect x="1500.2" y="277" width="1.3" height="15.0" fill="rgb(252,220,52)" rx="2" ry="2" />
+<text  x="1503.21" y="287.5" ></text>
+</g>
+<g >
+<title>hook AdiBags/libs/AceHook-3.0/AceHook-3.0.lua:118:0 (2,560 Bytes, 0.46%)</title><rect x="18.5" y="213" width="7.3" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="21.54" y="223.5" ></text>
+</g>
+<g >
+<title>UpdateMinimap Questie/Libs/HereBeDragons/HereBeDragons-Pins-2.0.lua:503:6 (12,392 Bytes, 2.22%)</title><rect x="307.9" y="341" width="35.0" height="15.0" fill="rgb(216,51,12)" rx="2" ry="2" />
+<text  x="310.87" y="351.5" >Up..</text>
+</g>
+<g >
+<title>_MP5:GetMP5ValueOnItems ExtendedCharacterStats/Modules/Data/MP5.lua:19:0 (4,656 Bytes, 0.83%)</title><rect x="92.9" y="277" width="13.1" height="15.0" fill="rgb(221,75,18)" rx="2" ry="2" />
+<text  x="95.88" y="287.5" ></text>
+</g>
+<g >
+<title>Dispatch AdiBags/libs/CallbackHandler-1.0/CallbackHandler-1.0.lua:15:6 (232 Bytes, 0.04%)</title><rect x="140.1" y="373" width="0.6" height="15.0" fill="rgb(244,180,43)" rx="2" ry="2" />
+<text  x="143.08" y="383.5" ></text>
+</g>
+</g>
+</svg>
