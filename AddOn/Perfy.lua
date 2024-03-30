@@ -90,6 +90,7 @@ end
 
 
 -- Hook error handlers
+local debugstack = debugstack or debug and debug.traceback
 local origErrorHandler
 local function errorHandler(...)
 	if isRunning then
@@ -139,16 +140,20 @@ local function export()
 		if type(funcName) == "thread" or type(funcName) == "function" then
 			funcName = tostring(funcName)
 		end
-		if type(funcName) == "string" then -- Avoid translating functions twice if we log multiple times
+		 -- Avoid translating functions/events twice if we log multiple times
+		if type(eventName) == "string" then
 			if not eventNames[eventName] then
 				eventNames[eventName] = eventId
 				eventId = eventId + 1
 			end
+			event[TraceFieldEvent] = eventNames[eventName]
+		end
+		if type(funcName) == "string" then
 			if not functionNames[funcName] then
 				functionNames[funcName] = funcId
 				funcId = funcId + 1
 			end
-			event[TraceFieldEvent], event[TraceFieldFunction] = eventNames[eventName], functionNames[funcName]
+			event[TraceFieldFunction] = functionNames[funcName]
 		end
 	end
 	if coroutine.running() then
@@ -170,6 +175,7 @@ end
 
 function Perfy_Stop()
 	if not isRunning then return end
+	Perfy_Trace(Perfy_GetTime(), "PerfyStop", "Perfy_Stop Perfy/internal")
 	isRunning = false
 	printStats()
 	local thread = coroutine.create(export)
@@ -184,18 +190,10 @@ function Perfy_Stop()
 	-- GC is restarted after exporting above
 end
 
--- Reloading/logging out while Perfy is running is a bad idea because it either doesn't generate a trace at all (started only once) or generates a broken trace (started multiple times)
--- Just try to stop it, but this may run into a timeout for a large trace because we can't run it in a coroutine at this point in time.
-local stopFrame = CreateFrame("Frame")
-stopFrame:RegisterEvent("ADDONS_UNLOADING")
-stopFrame:SetScript("OnEvent", function()
-	if isRunning then
-		isRunning = false
-		export()
-	end
-end)
-
 function Perfy_Start(timeout)
+	if isRunning then
+		return false
+	end
 	if #trace == 0 then
 		-- Make sure we don't accidentally import old saved variables
 		Perfy_Clear(true)
@@ -203,6 +201,7 @@ function Perfy_Start(timeout)
 	gc("stop")
 	hookErrorHandler()
 	isRunning = true
+	Perfy_Trace(Perfy_GetTime(), "PerfyStart", "Perfy_Start Perfy/internal")
 	if timeout then
 		C_Timer.After(timeout, Perfy_Stop)
 	end
@@ -213,6 +212,7 @@ function Perfy_Start(timeout)
 		end
 		printStats()
 	end)
+	return true
 end
 
 function Perfy_Clear(quiet)
@@ -231,20 +231,61 @@ function Perfy_Running()
 	return isRunning
 end
 
--- Log some events for loading screens and some that are useful for general debugging
-local frame = CreateFrame("Frame", "Perfy")
-frame:SetScript("OnUpdate", function()
-	Perfy_Trace(Perfy_GetTime(), "OnEvent", "OnUpdate")
-end)
-frame:SetScript("OnEvent", function(_, event, arg1)
-	Perfy_Trace(Perfy_GetTime(), "OnEvent", event .. " " .. tostring(arg1))
-end)
-frame:RegisterEvent("ADDON_LOADED")
-frame:RegisterEvent("LOADING_SCREEN_DISABLED")
-frame:RegisterEvent("LOADING_SCREEN_ENABLED")
-frame:RegisterEvent("PLAYER_ENTERING_WORLD")
-frame:RegisterEvent("PLAYER_LEAVING_WORLD")
-frame:RegisterEvent("PLAYER_LOGIN")
-frame:RegisterEvent("PLAYER_LOGOUT")
-frame:RegisterEvent("SPELLS_CHANGED")
-frame:Show()
+function Perfy_LoadAddOn(addon)
+	---@diagnostic disable-next-line: deprecated
+	local LoadAddOn = C_AddOns and C_AddOns.LoadAddOn or LoadAddOn
+	print("[Perfy] Loading and tracing addon " .. addon)
+	local didStart = Perfy_Start()
+	Perfy_Trace(Perfy_GetTime(), "LoadAddOn", addon)
+	local loaded, reason = LoadAddOn(addon)
+	Perfy_Trace(Perfy_GetTime(), "LoadAddOnFinished", addon)
+	if didStart then
+		Perfy_Stop()
+	end
+	if not loaded then
+		print("[Perfy] Failed to load AddOn " .. addon .. ": " .. (_G["ADDON_" .. reason] or reason))
+	end
+end
+
+function Perfy_Run(func)
+	local pcall = pcall
+	local didStart = Perfy_Start()
+	local ok, err = pcall(func)
+	if didStart then
+		Perfy_Stop()
+	end
+	if not ok then
+		error(err)
+	end
+end
+
+if not PERFY_TEST_ENVIRONMENT then
+	-- Log some events for loading screens and some that are useful for general debugging
+	local frame = CreateFrame("Frame", "Perfy")
+	frame:SetScript("OnUpdate", function()
+		Perfy_Trace(Perfy_GetTime(), "OnEvent", "OnUpdate")
+	end)
+	frame:SetScript("OnEvent", function(_, event, arg1)
+		Perfy_Trace(Perfy_GetTime(), "OnEvent", event .. " " .. tostring(arg1))
+	end)
+	frame:RegisterEvent("ADDON_LOADED")
+	frame:RegisterEvent("LOADING_SCREEN_DISABLED")
+	frame:RegisterEvent("LOADING_SCREEN_ENABLED")
+	frame:RegisterEvent("PLAYER_ENTERING_WORLD")
+	frame:RegisterEvent("PLAYER_LEAVING_WORLD")
+	frame:RegisterEvent("PLAYER_LOGIN")
+	frame:RegisterEvent("PLAYER_LOGOUT")
+	frame:RegisterEvent("SPELLS_CHANGED")
+	frame:Show()
+
+	-- Reloading/logging out while Perfy is running is a bad idea because it either doesn't generate a trace at all (started only once) or generates a broken trace (started multiple times)
+	-- Just try to stop it, but this may run into a timeout for a large trace because we can't run it in a coroutine at this point in time.
+	local stopFrame = CreateFrame("Frame")
+	stopFrame:RegisterEvent("ADDONS_UNLOADING")
+	stopFrame:SetScript("OnEvent", function()
+		if isRunning then
+			isRunning = false
+			export()
+		end
+	end)
+end

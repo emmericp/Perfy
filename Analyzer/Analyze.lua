@@ -29,7 +29,7 @@ function mod:LoadSavedVars(fileName)
 		local entry = {
 			---@type number
 			timestamp = v[1],
-			---@type "Enter"|"Leave"|"CoroutineResume"|"CoroutineYield"|"OnEvent"|"UncaughtError"
+			---@type "Enter"|"Leave"|"CoroutineResume"|"CoroutineYield"|"OnEvent"|"LoadAddOn"|"LoadAddOnFinished"|"UncaughtError"|"PerfyStart"|"PerfyStop"
 			event = eventNames[v[2]] or error("bad event id: " .. tostring(v[2])),
 			---@type string
 			functionName = functionNames[v[3]] or error("bad function id: " .. tostring(v[3])),
@@ -105,16 +105,11 @@ function mod:FlameGraph(trace, field, overheadField)
 	local stack = coroutines.main.stack
 	local prev
 	local lastAddonLoaded
-	local addonLoadTimes = {}
 	local loadingAddOns = false
 	for i, v in ipairs(trace) do
 		local delta = prev and v[field] - prev[field] - prev[overheadField] or 0
 		local activeCoroutine = coroutines[currentCoroutine[#currentCoroutine]]
 		local bt = backtrace(stack, activeCoroutine)
-		if v.event == "Enter" and lastAddonLoaded then
-			lastAddonLoaded.dbg = lastAddonLoaded.dbg or {}
-			lastAddonLoaded.dbg[#lastAddonLoaded.dbg + 1] = v
-		end
 		if v.event == "Enter" then
 			if #stack > 0 then
 				if delta > 0 then
@@ -123,9 +118,9 @@ function mod:FlameGraph(trace, field, overheadField)
 			elseif loadingAddOns and v.functionName:find("(main chunk)", nil, true) == 1 then
 				-- Usually the time passed before an Enter from an empty stack is not accounted to anything because the time was likely spent in something that we can't account for.
 				-- However, if this is the execution of main chunk and the last event is either leaving a main chunk or an ADDON_LOADED event then this was the time it took to load the file.
-				-- First event we see is Perfy itself which enables this and we stop once PLAYER_LOGIN fires. Yes, this means this doesn't work for on-demand loaded addons for now.
+				-- First event we see is Perfy itself which enables this and we stop once PLAYER_LOGIN fires.
 				local prevEvent = lastAddonLoaded and lastAddonLoaded.timestamp > (prev and prev.timestamp or 0) and lastAddonLoaded or prev
-				if prevEvent and prevEvent.event == "OnEvent" or prevEvent and prevEvent.event == "Leave" and prevEvent.functionName:find("(main chunk)", nil, true) == 1 then
+				if prevEvent and (prevEvent.event == "OnEvent" or prevEvent.event == "LoadAddOn" or prevEvent.event == "Leave" and prevEvent.functionName:find("(main chunk)", nil, true) == 1) then
 					local delta = v[field] - prevEvent[field] - prevEvent[overheadField]
 					if delta > 0 then
 						local fakeStack = {}
@@ -204,6 +199,12 @@ function mod:FlameGraph(trace, field, overheadField)
 				currentCoroutine[#currentCoroutine] = nil
 				stack = coroutines[currentCoroutine[#currentCoroutine]].stack
 			end
+		elseif v.event == "LoadAddOn" then
+			loadingAddOns = true
+			lastAddonLoaded = v
+		elseif v.event == "LoadAddOnFinished" then
+			loadingAddOns = false
+			lastAddonLoaded = nil
 		elseif v.event == "UncaughtError" then -- FIXME: this has 0% test coverage
 			if #stack > 0 and delta > 0 then
 				result[bt] = (result[bt] or 0) + delta
@@ -223,6 +224,8 @@ function mod:FlameGraph(trace, field, overheadField)
 				end
 				lastAddonLoaded = v
 			end
+		elseif v.event == "PerfyStart" or v.event == "PerfyStop" then
+			-- No-op at the moment, but useful for debugging.
 		else
 			if not warningsShown[v.event] then
 				print(("unknown event at entry %d: %s"):format(i, v.event))
