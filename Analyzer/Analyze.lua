@@ -183,28 +183,44 @@ function mod:FlameGraph(trace, field, overheadField)
 				end
 			end
 		elseif v.event == "CoroutineResume" then
-			if delta > 0 then
-				result[bt] = (result[bt] or 0) + delta
-			end
-			coroutines[v.functionName] = coroutines[v.functionName] or {stack = {}}
 			if #stack > 0 then
-				coroutines[v.functionName].firstResume = coroutines[v.functionName].firstResume or stack[#stack].functionName
+				if delta > 0 then
+					result[bt] = (result[bt] or 0) + delta
+				end
+				coroutines[v.functionName] = coroutines[v.functionName] or {stack = {}}
+				if #stack > 0 then
+					coroutines[v.functionName].firstResume = coroutines[v.functionName].firstResume or stack[#stack].functionName
+				end
+				currentCoroutine[#currentCoroutine + 1] = v.functionName
+				stack = coroutines[v.functionName].stack
+			else
+				local warning = "Resuming coroutine from unknown location, likely uninstrumented code, ignoring. Coroutine stacks will be off if this coroutine calls instrumented code."
+				if not warningsShown[warning] then
+					warningsShown[warning] = true
+					print(warning)
+				end
 			end
-			currentCoroutine[#currentCoroutine + 1] = v.functionName
-			stack = coroutines[v.functionName].stack
 		elseif v.event == "CoroutineYield" then
-			if delta > 0 then
-				result[bt] = (result[bt] or 0) + delta
-			end
-			if #currentCoroutine <= 1 then -- yielding from main
-				local warningId = "coroutine stack underflow " .. (#stack > 0 and stack[#stack].functionName or "(unknown function)")
-				if not warningsShown[warningId] then
-					warningsShown[warningId] = true
-					print("coroutine stack underflow at " .. i .. " in " .. (#stack > 0 and stack[#stack].functionName or "(unknown function)") .. " likely missing the start of a coroutine in a trace")
+			if #stack > 0 then
+				if delta > 0 then
+					result[bt] = (result[bt] or 0) + delta
+				end
+				if #currentCoroutine <= 1 then -- yielding from main
+					local warningId = "coroutine stack underflow " .. (#stack > 0 and stack[#stack].functionName or "(unknown function)")
+					if not warningsShown[warningId] then
+						warningsShown[warningId] = true
+						print("coroutine stack underflow at " .. i .. " in " .. (#stack > 0 and stack[#stack].functionName or "(unknown function)") .. " likely missing the start of a coroutine in a trace")
+					end
+				else
+					currentCoroutine[#currentCoroutine] = nil
+					stack = coroutines[currentCoroutine[#currentCoroutine]].stack
 				end
 			else
-				currentCoroutine[#currentCoroutine] = nil
-				stack = coroutines[currentCoroutine[#currentCoroutine]].stack
+				local warning = "yielding coroutine from unknown location, likely uninstrumented code, ignoring. Coroutine stacks will be off if this coroutine calls instrumented code."
+				if not warningsShown[warning] then
+					warningsShown[warning] = true
+					print(warning)
+				end
 			end
 		elseif v.event == "LoadAddOn" then
 			loadingAddOns = true
