@@ -57,10 +57,17 @@ local function parseStackEntry(str)
 		fileName = str:match("[^%s]+ (.*)")
 	end
 	if not fileName then return end
-	local addon, firstSubDir, secondSubDir = fileName:match("([^/]+)/?([^/]*)/?([^/]*)/")
-	local result = not firstSubDir and addon or firstSubDir and firstSubDir:match("[lL]ibs?") and secondSubDir or addon
+	local result, isLib
+	if fileName:match("^file://") then
+		result = "(unknown addon)"
+		isLib = false
+	else
+		local addon, firstSubDir, secondSubDir = fileName:match("([^/]+)/?([^/]*)/?([^/]*)/")
+		result = not firstSubDir and addon or firstSubDir and firstSubDir:match("[lL]ibs?") and secondSubDir or addon
+		isLib = not not (firstSubDir and firstSubDir:match("[lL]ibs?"))
+	end
 	stackEntryCache[str] = result
-	isLibCache[str] = not not (firstSubDir and firstSubDir:match("[lL]ibs?"))
+	isLibCache[str] = isLib
 	return result
 end
 
