@@ -46,7 +46,7 @@ local function handleTocFile(fileName)
 
 	toc:InjectDependency(lines)
 
-	file, err = io.open(fileName, "w+")
+	file, err = io.open(fileName, "w+b")
 	if not file then error(err) end
 	for _, line in ipairs(lines) do
 		file:write(line)

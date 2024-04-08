@@ -228,11 +228,11 @@ function mod:Instrument(code, fileName, retryAfterLocalLimitExceeded)
 end
 
 function mod:InstrumentFile(fileName)
-	-- TODO: this is case sensitive on reasonable filesystems, but WoW in WoW it isn't case sensitive.
 	if not fileName:lower():match(".lua$") then
 		print("File " .. fileName .. " does not seem to be a Lua file, skipping.")
 		return
 	end
+	-- TODO: this is case sensitive on reasonable filesystems, but Lua in WoW it isn't case sensitive.
 	local file, err = io.open(fileName, "r")
 	if not file then error(err) end
 	local code = file:read("*a")
@@ -242,7 +242,7 @@ function mod:InstrumentFile(fileName)
 		print("Could not instrument " .. fileName .. ": " .. err)
 		return
 	end
-	file, err = io.open(fileName, "w+")
+	file, err = io.open(fileName, "w+b")
 	if not file then error(err) end
 	for _, line in ipairs(output) do
 		file:write(line) -- line already contains the original line ending

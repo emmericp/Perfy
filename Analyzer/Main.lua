@@ -6,7 +6,7 @@ if not inFile then
 end
 
 local function writeFile(fileName, data)
-	local file, err = io.open(fileName, "w+")
+	local file, err = io.open(fileName, "w+b")
 	if not file then error(err) end
 	local count = 0
 	for k, v in pairs(data) do
