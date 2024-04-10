@@ -87,7 +87,8 @@ end
 function mod:FindFiles(lines, dir)
 	local files = {}
 	for _, line in ipairs(lines) do
-		if not line:match("^%s*#") and not line:match("^%s*$") then
+		---@diagnostic disable-next-line: err-esc
+		if not line:match("^[%s\xef\xbb\xbf]*#") and not line:match("^[%s\xef\xbb\xbf]*$") then
 			local file = line:gsub("^%s*(.-)%s*$", "%1"):gsub("\\", "/")
 			if file:match("%.[xX][mM][lL]$") then
 				parseXml(dir .. file, dir, files)
