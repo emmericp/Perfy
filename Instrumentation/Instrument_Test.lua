@@ -13,7 +13,6 @@ LUA_VER = "Lua 5.1"
 TEST = true
 
 local parser = require "parser"
-local guide = require "parser.guide"
 
 local instrument = require "Instrument"
 
@@ -175,7 +174,8 @@ testGetFunctionName("function foo:bar() end", "foo:bar test.lua:1:0")
 testGetFunctionName("function foo.bar() end", "foo.bar test.lua:1:0")
 testGetFunctionName("foo.bar = function() end", "foo.bar test.lua:1:10")
 testGetFunctionName("foo['bar'] = function() end", "foo.bar test.lua:1:13")
-testGetFunctionName("foo[5] = function() end", "foo.5 test.lua:1:9")
+testGetFunctionName("foo['foo\"bar'] = function() end", "foo[\"foo\\\"bar\"] test.lua:1:17")
+testGetFunctionName("foo[5] = function() end", "foo[5] test.lua:1:9")
 testGetFunctionName("foo[foo()] = function() end", "foo.? test.lua:1:13")
 testGetFunctionName("foo().bar = function() end", "?.bar test.lua:1:12")
 testGetFunctionName("foo = {bar = function() end}", "foo.bar test.lua:1:13")
@@ -183,6 +183,9 @@ testGetFunctionName("foo = {['bar'] = function() end}", "foo.bar test.lua:1:17")
 testGetFunctionName("(foo)[foo()] = function() end", "(anonymous) test.lua:1:15")
 testGetFunctionName("foo(function() end)", "(anonymous) test.lua:1:4")
 testGetFunctionName("return function() end", "(anonymous) test.lua:1:7")
+testGetFunctionName("local foo = {['foo bar'] = function() end}", "foo[\"foo bar\"] test.lua:1:27")
+testGetFunctionName("local foo = {[true] = function() end}", "foo[true] test.lua:1:22")
+testGetFunctionName("local foo = {[false] = function() end}", "foo[false] test.lua:1:23")
 
 -- TODO: this is actually not ideal
 testGetFunctionName("foo.bar.x = function() end", "bar.x test.lua:1:12")

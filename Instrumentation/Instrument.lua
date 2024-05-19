@@ -65,6 +65,16 @@ local function stripFilePrefix(file)
 	return file:match("^file://.-Interface/AddOns/(.*)") or file
 end
 
+local function getTableIndexPretty(key)
+	if type(key) == "string" and key:match("^[%a_][%w_]*$")  then
+		return "." .. key
+	elseif key == nil then
+		return ".?"
+	else
+		return ("[%q]"):format(key)
+	end
+end
+
 -- TODO: doesn't support nested tables, let's see if this turns out to be relevant
 local function getFunctionName(node, fileName)
 	local line, pos = splitPos(node.start)
@@ -81,13 +91,13 @@ local function getFunctionName(node, fileName)
 		local tbl = guide.getKeyName(parent.node)
 		local key = guide.getKeyName(parent)
 		if tbl or key then
-			name = (tbl or "?") .. "." .. (key or "?")
+			name = (tbl or "?") .. getTableIndexPretty(key)
 		end
 	elseif parent.type == "tablefield" or parent.type == "tableindex" then
 		local key = guide.getKeyName(parent)
 		local tableVar = parent.parent.parent
 		if tableVar.type == "setglobal" or tableVar.type == "setlocal" or tableVar.type == "local" then
-			name = guide.getKeyName(tableVar) .. "." .. (key or "?")
+			name = guide.getKeyName(tableVar) .. getTableIndexPretty(key)
 		end
 	end
 	return name .. " " .. stripFilePrefix(fileName) .. ":" .. line .. ":" .. pos
