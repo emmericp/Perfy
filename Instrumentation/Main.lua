@@ -5,7 +5,10 @@ package.path = package.path .. basePath .. "/?.lua;"
 package.path = package.path .. basePath .. "/?/init.lua"
 _G.log = require "log"
 local fs = require "bee.filesystem"
-ROOT = fs.path(fs.exe_path():parent_path():parent_path():string()) -- The dir under which LuaLS is
+local util = require "utility"
+local rootPath = debug.getinfo(1, "S").source:sub(2):gsub("[/\\]*[^/\\]-$", "")
+rootPath = rootPath == "" and "." or rootPath
+ROOT = util.expandPath(rootPath)
 LUA_VER = "Lua 5.1"
 
 local instrument = require "Instrument"
