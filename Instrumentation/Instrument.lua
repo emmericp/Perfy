@@ -71,6 +71,11 @@ local function getTableIndexPretty(key)
 	elseif key == nil then
 		return ".?"
 	else
+		-- The analyzer expects this to not contain spaces, so we just get rid of them because I don't feel like parsing string literals correct in the analyzer.
+		-- Note that this is not a problem wrt uniqueness because the full name still includes the exact position.
+		if type(key) == "string" then
+			key = key:gsub(" ", "_")
+		end
 		return ("[%q]"):format(key)
 	end
 end

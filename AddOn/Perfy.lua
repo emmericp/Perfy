@@ -1,12 +1,13 @@
 Perfy_GetTime = GetTimePreciseSec
 local Perfy_GetTime = Perfy_GetTime
 local gc = collectgarbage
+local type, tostring = type, tostring
 
 --- Fields: timestamp, event, functionName, timeOverhead, memory, memoryOverhead
 ---@type table<number, string|number, string|number, number, number?, number?>[]
 local trace = {}
 
-local TraceFieldTimestamp, TraceFieldEvent, TraceFieldFunction, TraceFieldTimeOverhead, TraceFieldMemory, TraceFieldMemoryOverhead = 1, 2, 3, 4, 5, 6
+local TraceFieldTimestamp, TraceFieldEvent, TraceFieldFunction, TraceFieldTimeOverhead, TraceFieldMemory, TraceFieldMemoryOverhead, TraceFieldExtraArg = 1, 2, 3, 4, 5, 6, 7
 
 local isRunning
 
@@ -33,12 +34,19 @@ Collection of ideas to maybe try:
 
 
 -- Generic trace function, timestamp taken before it is called.
-local function Perfy_Trace(timestamp, event, func)
+local function Perfy_Trace(timestamp, event, func, extraArg)
 	if not isRunning then return end
 	local mem = gc("count") * 1024
-	local entry = {
-		timestamp, event, func, 0, mem, mem
-	}
+	local entry
+	if extraArg then -- Important to distinguish these two cases to get a table with an exact number of entries
+		entry = {
+			timestamp, event, func, 0, mem, mem, extraArg
+		}
+	else
+		entry = {
+			timestamp, event, func, 0, mem, mem
+		}
+	end
 	trace[#trace + 1] = entry
 	mem = gc("count") * 1024
 	entry[6] = mem - entry[6] -- Memory overhead
@@ -119,7 +127,6 @@ local function printStats()
 	print(("[Perfy] Memory allocations (incl. overhead): %.2f MiB."):format((lastTrace[5] - firstTrace[5]) / 1024 / 1024))
 end
 
-local type = type
 local funcId, eventId = 1, 1
 local function export()
 	-- Mapping all strings to numbers makes the saved variables file a bit smaller.
@@ -136,9 +143,13 @@ local function export()
 		if #trace > 1e6 and i % printInterval == 0 then
 			print(("[Perfy] Exporting... %d%%"):format(math.ceil(i / numEntries * 10) * 10))
 		end
-		local eventName, funcName = event[TraceFieldEvent], event[TraceFieldFunction]
+		local eventName, funcName, extraArg = event[TraceFieldEvent], event[TraceFieldFunction], event[TraceFieldExtraArg]
 		if type(funcName) == "thread" or type(funcName) == "function" then
 			funcName = tostring(funcName)
+		end
+		if extraArg ~= nil and (type(extraArg) == "thread" or type(extraArg) == "function" or type(extraArg) == "table") then
+			-- nil check is important to not accidentally grow 6-entry tables
+			event[TraceFieldExtraArg] = type(extraArg)
 		end
 		 -- Avoid translating functions/events twice if we log multiple times
 		if type(eventName) == "string" then
@@ -262,11 +273,17 @@ end
 if not PERFY_TEST_ENVIRONMENT then
 	-- Log some events for loading screens and some that are useful for general debugging
 	local frame = CreateFrame("Frame", "Perfy")
-	frame:SetScript("OnUpdate", function()
-		Perfy_Trace(Perfy_GetTime(), "OnEvent", "OnUpdate")
+	frame:SetScript("OnUpdate", function(_, elapsed)
+		-- The extra argument is used to estimate FPS, unfortunate there is no good way to get realtime FPS:
+		-- * elapsed and GetTime() have a  1ms granularity
+		-- * GetFramerate() only gives an average over the last second
+		-- * The OnUpdate call itself doesn't happen at a consistent point in time within a frame
+		-- So let's used elapsed, it's close enough and less random than the Perfy timestamp
+		-- For 60 fps this will either report 16 or 17 ms.
+		Perfy_Trace(Perfy_GetTime(), "OnEvent", "OnUpdate", elapsed)
 	end)
 	frame:SetScript("OnEvent", function(_, event, arg1)
-		Perfy_Trace(Perfy_GetTime(), "OnEvent", event .. " " .. tostring(arg1))
+		Perfy_Trace(Perfy_GetTime(), "OnEvent", event, arg1)
 	end)
 	frame:RegisterEvent("ADDON_LOADED")
 	frame:RegisterEvent("LOADING_SCREEN_DISABLED")

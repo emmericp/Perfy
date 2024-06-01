@@ -11,7 +11,7 @@
 -- 7. SPELLS_CHANGED fires
 --
 -- We care about when the user considers the game running, a reasonable definition for running is "after the first frame has been drawn".
--- A reasonable close approximation for this is the start of the second (!) OnUpdate call because we are the first AddOn (they seem to be called in frame creation order).
+-- A reasonable close approximation for this is the start of the second (!) OnUpdate call because they happen before a frame is drawn.
 -- Note that being off here by a frame isn't too bad because we only account time that we can "see" anyways, so the extra time during the two frames the game does other things doesn't show up anyways.
 local counter = 0
 local loginLoadingScreenFrame = CreateFrame("Frame")

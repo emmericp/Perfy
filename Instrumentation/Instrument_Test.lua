@@ -183,7 +183,7 @@ testGetFunctionName("foo = {['bar'] = function() end}", "foo.bar test.lua:1:17")
 testGetFunctionName("(foo)[foo()] = function() end", "(anonymous) test.lua:1:15")
 testGetFunctionName("foo(function() end)", "(anonymous) test.lua:1:4")
 testGetFunctionName("return function() end", "(anonymous) test.lua:1:7")
-testGetFunctionName("local foo = {['foo bar'] = function() end}", "foo[\"foo bar\"] test.lua:1:27")
+testGetFunctionName("local foo = {['foo bar'] = function() end}", "foo[\"foo_bar\"] test.lua:1:27")
 testGetFunctionName("local foo = {[true] = function() end}", "foo[true] test.lua:1:22")
 testGetFunctionName("local foo = {[false] = function() end}", "foo[false] test.lua:1:23")
 
