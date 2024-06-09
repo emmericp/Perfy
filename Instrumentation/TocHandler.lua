@@ -6,10 +6,12 @@ function mod:InjectDependency(lines, dep)
 	local foundDependencyEntry = false
 	local foundPerfyMetadata = false
 	for i, line in ipairs(lines) do
-		local key, value = line:match("^##%s*([^:%s]+)%s*:%s*(.-)%s*$")
+		---@diagnostic disable-next-line: err-esc
+		local _, key, value = line:match("^(\xef?\xbb?\xbf?)##%s*([^:%s]+)%s*:%s*(.-)%s*$")
+		print(_, key, value)
 		if key and value then
 			lastMetadataLine = i
-			if key == "Dependencies" then
+			if key == "RequiredDeps" or key:match("^Dep") then
 				foundDependencyEntry = true
 				local foundDep = false
 				for entry in value:gmatch("([^%s,]+)") do
@@ -87,7 +89,8 @@ end
 function mod:FindFiles(lines, dir)
 	local files = {}
 	for _, line in ipairs(lines) do
-		if not line:match("^%s*#") and not line:match("^%s*$") then
+		---@diagnostic disable-next-line: err-esc
+		if not line:match("^[%s\xef\xbb\xbf]*#") and not line:match("^[%s\xef\xbb\xbf]*$") then
 			local file = line:gsub("^%s*(.-)%s*$", "%1"):gsub("\\", "/")
 			if file:match("%.[xX][mM][lL]$") then
 				parseXml(dir .. file, dir, files)
