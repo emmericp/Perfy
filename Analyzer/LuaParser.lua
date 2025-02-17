@@ -230,18 +230,14 @@ local function parseTable(code, pos)
 	return pos, result
 end
 
-local yieldCounter = 0
+local printCounter = 0
 function parseValue(code, pos)
-	yieldCounter = yieldCounter + 1
-	-- A large log contains ~500k values and takes ~1 second to parse
-	-- Example: full molten core run is 640k strings in 100MiB and takes ~1.25s
-	-- ~25k will yield ~20 times per second
-	if yieldCounter == 25000 then
-		yieldCounter = 0
-		local cr, main = coroutine.running()
-		if cr and not main then
-			coroutine.yield()
-		end
+	printCounter = printCounter + 1
+	-- Logs can have hundreds of millions of values, just printing some stats regularly so it doesn't look dead
+	if printCounter % 1000000 == 0 then
+		local before = collectgarbage("count")
+		collectgarbage("collect") -- This seems to be important, makes the difference between OOM'ing after ~100M literals vs ~300M literals on a 16 GiB VM
+		print(("Parsed %d literals"):format(printCounter))
 	end
 	local nextChar = peekChar(code, pos)
 	if not nextChar then
@@ -277,6 +273,7 @@ end
 -- This is in no way a complete or correct parser for Lua tables, just something that happens to work for what WoW generates as saved variables (Transcriptor logs etc)
 -- Specifically it doesn't handle multi-line comments and multi-line strings correctly as they are pretty complex.
 function parser:ParseLua(code)
+	print("Parsing Lua in trace file")
 	code = stripComments(code)
 	local pos = 1
 	return parseChunk(code, pos)

@@ -2,12 +2,18 @@ local parser = require "LuaParser"
 
 local mod = {}
 
----@return TraceEntry[]
-function mod:LoadSavedVars(fileName)
+function mod:readFile(fileName)
 	local file, err = io.open(fileName, "rb")
 	if not file then error(err) end
-	local fileConents = file:read("*a")
-	local env = parser:ParseLua(fileConents)
+	return file:read("*a")
+end
+
+---@return TraceEntry[]
+function mod:LoadSavedVars(fileName)
+	local fileContents = self:readFile(fileName)
+	print(("Read %.1f MiB trace data"):format(#fileContents / 1024 / 1024))
+	local env = parser:ParseLua(fileContents)
+	print(("Trace has %d"):format(#env.Perfy_Export.Trace))
 	local eventNames, functionNames = {}, {}
 	for k, v in pairs(env.Perfy_Export.EventNames) do
 		if eventNames[v] then error("Duplicate event name mapping: " .. k .. " has the same mapping as " .. eventNames[v]) end
@@ -17,8 +23,8 @@ function mod:LoadSavedVars(fileName)
 		if functionNames[v] then error("Duplicate function name mapping: " .. k .. " has the same mapping as " .. functionNames[v]) end
 		functionNames[v] = k
 	end
-	local trace = {}
-	for _, v in ipairs(env.Perfy_Export.Trace) do
+	local trace = env.Perfy_Export.Trace -- Traces can be hundreds of millions of entries, avoid creating a new array of that size
+	for i, v in ipairs(trace) do
 		---@class TraceEntry
 		local entry = {
 			---@type number
@@ -32,7 +38,7 @@ function mod:LoadSavedVars(fileName)
 			memoryOverhead = v[6] or 0,
 			extraArg = v[7]
 		}
-		trace[#trace + 1] = entry
+		trace[i] = entry
 	end
 	local delta = #trace > 0 and trace[#trace].timestamp - trace[1].timestamp or 0
 	print(("Loaded file with %d trace entries covering %.2f seconds."):format(#trace, delta))

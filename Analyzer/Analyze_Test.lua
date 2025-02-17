@@ -35,6 +35,7 @@ Perfy_Export = {
 }
 ]]
 
+-- FIXME: this broke with the introduction of the Lua parser which can't handle the file above :/
 local oldLoadfile = loadfile
 function loadfile(file, ...)
 	if file == "test" then
