@@ -1,19 +1,13 @@
+local parser = require "LuaParser"
+
 local mod = {}
 
 ---@return TraceEntry[]
 function mod:LoadSavedVars(fileName)
-	local env = {}
-	if _VERSION == "Lua 5.1" then
-		local f, err = loadfile(fileName)
-		if not f then error(err) end
-		setfenv(f, env)
-		f()
-	else
-		---@diagnostic disable-next-line: redundant-parameter
-		local f, err = loadfile(fileName, nil, env)
-		if not f then error(err) end
-		f()
-	end
+	local file, err = io.open(fileName, "rb")
+	if not file then error(err) end
+	local fileConents = file:read("*a")
+	local env = parser:ParseLua(fileConents)
 	local eventNames, functionNames = {}, {}
 	for k, v in pairs(env.Perfy_Export.EventNames) do
 		if eventNames[v] then error("Duplicate event name mapping: " .. k .. " has the same mapping as " .. eventNames[v]) end
